@@ -1,0 +1,47 @@
+# XcodeGen 工程定义。在 Mac 上执行 `xcodegen generate` 产出 Husk.xcodeproj。
+# 仓库里刻意不提交 .xcodeproj：pbxproj 手写极易损坏，而本仓库的生成环境没有 Xcode 可供验证。
+name: Husk
+
+options:
+  bundleIdPrefix: org.example
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: false
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"                 # Swift 6 语言模式（严格并发检查）
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+    CLANG_ENABLE_MODULES: YES
+    GCC_C_LANGUAGE_STANDARD: gnu17
+
+targets:
+  Husk:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources
+    settings:
+      base:
+        PRODUCT_NAME: Husk
+        PRODUCT_BUNDLE_IDENTIFIER: org.example.husk   # ← 改成你自己的
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: Support/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"                 # iPhone + iPad
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""                          # ← 填你的 Team ID，或在 Xcode 里选
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE: NO
+        SWIFT_EMIT_LOC_STRINGS: YES
+    dependencies:
+      - sdk: WebKit.framework
+      - sdk: CryptoKit.framework

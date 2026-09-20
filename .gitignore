@@ -1,0 +1,16 @@
+# Xcode / XcodeGen
+*.xcodeproj/
+*.xcworkspace/
+!*.xcodeproj/project.xcworkspace/xcshareddata
+xcuserdata/
+DerivedData/
+build/
+*.xcuserstate
+*.mobileconfig
+
+# macOS
+.DS_Store
+
+# Swift
+.swiftpm/
+.build/
