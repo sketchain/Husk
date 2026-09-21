@@ -69,50 +69,44 @@ final class WebCoordinator: NSObject {
 // MARK: - 导航策略
 
 extension WebCoordinator: WKNavigationDelegate {
+    /// 用 **async 变体**而不是 completion handler 版本。
+    ///
+    /// iOS 18 起 WebKit 给这些回调加上了 `@MainActor`，旧签名
+    /// `decisionHandler: @escaping (WKNavigationActionPolicy) -> Void` 只是"近似匹配"
+    /// 协议要求——编译器给个 warning 就过去了，但运行时这个方法**根本不会被调用**，
+    /// 表现就是外链拦截、scheme 跳转全部静默失效。这种 bug 极难从现象反推。
+    ///
+    /// 手动补 `@MainActor @Sendable` 也能对上，但那是在追 SDK 的标注；
+    /// 本项目最低 iOS 18，直接用 async 变体，签名里没有闭包就没有标注漂移的问题。
     func webView(
         _ webView: WKWebView,
-        decidePolicyFor navigationAction: WKNavigationAction,
-        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-    ) {
-        guard let url = navigationAction.request.url else {
-            decisionHandler(.allow)
-            return
-        }
+        decidePolicyFor navigationAction: WKNavigationAction
+    ) async -> WKNavigationActionPolicy {
+        guard let url = navigationAction.request.url else { return .allow }
 
         let scheme = url.scheme?.lowercased()
 
         // 非 web scheme（mailto: tel: weixin: itms-apps: 各种 app 跳转）交给系统，
         // WebView 自己处理不了，不拦的话就是一个"点了没反应"。
         if scheme != "http", scheme != "https", scheme != "about", scheme != "blob", scheme != "data" {
-            decisionHandler(.cancel)
             openExternalApp(url, from: navigationAction)
-            return
+            return .cancel
         }
 
         // 只拦"用户点出来的主框架导航"。
         // iframe、重定向、表单提交、资源请求一律放行——
         // 一起拦会把 OAuth 跳转、支付回调、单页应用的路由全打断。
-        guard navigationAction.navigationType == .linkActivated else {
-            decisionHandler(.allow)
-            return
-        }
+        guard navigationAction.navigationType == .linkActivated else { return .allow }
         guard let targetFrame = navigationAction.targetFrame else {
             // targetFrame == nil 表示要开新窗口（target=_blank / window.open）。
             // 这里放行，交给 createWebViewWith 去处理，别在这儿截胡。
-            decisionHandler(.allow)
-            return
+            return .allow
         }
-        guard targetFrame.isMainFrame else {
-            decisionHandler(.allow)
-            return
-        }
+        guard targetFrame.isMainFrame else { return .allow }
 
-        if shouldHandOffToSafari(url) {
-            decisionHandler(.cancel)
-            handOff(url)
-        } else {
-            decisionHandler(.allow)
-        }
+        guard shouldHandOffToSafari(url) else { return .allow }
+        handOff(url)
+        return .cancel
     }
 
     func shouldHandOffToSafari(_ url: URL) -> Bool {

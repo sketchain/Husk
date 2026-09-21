@@ -1,4 +1,7 @@
 import UIKit
+// touchesBegan / reset() 这些"给子类用"的方法声明在 UIGestureRecognizerSubclass.h 里，
+// Swift 侧必须显式 import 这个子模块才看得见，不然子类里的 override 会报"没有可覆盖的方法"。
+import UIKit.UIGestureRecognizerSubclass
 
 /// 工具箱的四种唤出手势。
 ///

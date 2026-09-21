@@ -62,8 +62,15 @@ final class WebsiteDataStoreManager {
     }
 
     /// 磁盘上真实存在的 store 标识。做孤儿清理用。
+    ///
+    /// 这个 API **没有**自动生成的 async 变体（编译器只认得收 completion handler 的那版），
+    /// 所以这里自己用 continuation 包一层。别想当然地 `await` 它。
     func existingIdentifiers() async -> [UUID] {
-        await WKWebsiteDataStore.fetchAllDataStoreIdentifiers()
+        await withCheckedContinuation { (continuation: CheckedContinuation<[UUID], Never>) in
+            WKWebsiteDataStore.fetchAllDataStoreIdentifiers { identifiers in
+                continuation.resume(returning: identifiers)
+            }
+        }
     }
 
     // MARK: - 清除
