@@ -124,7 +124,10 @@ jobs:
           ls -lh "$IPA"
 
       - name: 上传产物
-        # v6 / v7 也可用，这里用 v4 图个稳
+        # 注：checkout@v4 / upload-artifact@v4 基于 Node 20，GitHub 已宣布弃用，
+        # 目前被自动强制跑在 Node 24 上（日志里会有一条 warning），功能不受影响。
+        # 哪天真停了就把 checkout 升到 v5、upload 升到 v6+；
+        # 升 upload 的时候记得 release.yml 里的 download-artifact 要配套一起升。
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.meta.outputs.artifact_name }}

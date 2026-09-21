@@ -26,6 +26,7 @@ jobs:
 
     steps:
       - name: 取回编译产物
+        # 版本要和 build.yml 里的 upload-artifact 配套，别单独升
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build.outputs.artifact_name }}
