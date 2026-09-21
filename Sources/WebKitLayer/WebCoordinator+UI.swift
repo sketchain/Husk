@@ -21,11 +21,16 @@ extension WebCoordinator: WKUIDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        // 弹窗目标要是按当前策略该交给 Safari，就别开模态了，直接甩出去
-        if let url = navigationAction.request.url, shouldHandOffToSafari(url) {
-            handOff(url)
-            return nil
-        }
+        // 这里**刻意不套用外链策略**。
+        //
+        // 之前这儿有一段"目标域名按策略该去 Safari 就直接甩出去"，看着合理，实际上把
+        // 下面那段关于 window.opener 的努力全废了：默认策略是"按域名判断"，而登录弹窗
+        // 十有八九开在 accounts.google.com 这类外域上，于是每一个弹窗式 OAuth 都会被
+        // 甩进 Safari——opener 根本不存在了，用户在 Safari 里授权完，Husk 这边干等。
+        //
+        // 定性上也说得通：外链策略管的是"从这个站导航走"，而 window.open 开出来的是
+        // **站点自己流程的一部分**（授权、支付、打印预览），它和 opener 有绑定关系。
+        // 所以弹窗一律留在站内的模态里，关掉就回原页。
 
         WebViewFactory.applyConfigurationExtras(to: configuration, handler: messageProxy)
         let popup = WKWebView(frame: .zero, configuration: configuration)
@@ -50,56 +55,62 @@ extension WebCoordinator: WKUIDelegate {
     //
     // 不实现这几个方法的话，alert / confirm / prompt 在 WKWebView 里是"什么都不发生"，
     // 而且 confirm 永远返回 false。对一个当 app 用的容器来说这是明显的功能缺失。
+    //
+    // 同样用 async 变体，理由见 WebCoordinator.decidePolicyFor 上面那段：
+    // iOS 18 起这些 completion handler 带了 @MainActor，旧签名只"近似匹配"，
+    // 编译器放过但运行时不会被调用。
 
     func webView(
         _ webView: WKWebView,
         runJavaScriptAlertPanelWithMessage message: String,
-        initiatedByFrame frame: WKFrameInfo,
-        completionHandler: @escaping () -> Void
-    ) {
-        guard let presenter = webView.owningViewController else {
-            completionHandler()
-            return
+        initiatedByFrame frame: WKFrameInfo
+    ) async {
+        guard let presenter = webView.owningViewController else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let alert = UIAlertController(title: frame.securityOrigin.host, message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "好", style: .default) { _ in
+                continuation.resume()
+            })
+            presenter.present(alert, animated: true)
         }
-        let alert = UIAlertController(title: frame.securityOrigin.host, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "好", style: .default) { _ in completionHandler() })
-        presenter.present(alert, animated: true)
     }
 
     func webView(
         _ webView: WKWebView,
         runJavaScriptConfirmPanelWithMessage message: String,
-        initiatedByFrame frame: WKFrameInfo,
-        completionHandler: @escaping (Bool) -> Void
-    ) {
-        guard let presenter = webView.owningViewController else {
-            completionHandler(false)
-            return
+        initiatedByFrame frame: WKFrameInfo
+    ) async -> Bool {
+        guard let presenter = webView.owningViewController else { return false }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let alert = UIAlertController(title: frame.securityOrigin.host, message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+                continuation.resume(returning: false)
+            })
+            alert.addAction(UIAlertAction(title: "好", style: .default) { _ in
+                continuation.resume(returning: true)
+            })
+            presenter.present(alert, animated: true)
         }
-        let alert = UIAlertController(title: frame.securityOrigin.host, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completionHandler(false) })
-        alert.addAction(UIAlertAction(title: "好", style: .default) { _ in completionHandler(true) })
-        presenter.present(alert, animated: true)
     }
 
     func webView(
         _ webView: WKWebView,
         runJavaScriptTextInputPanelWithPrompt prompt: String,
         defaultText: String?,
-        initiatedByFrame frame: WKFrameInfo,
-        completionHandler: @escaping (String?) -> Void
-    ) {
-        guard let presenter = webView.owningViewController else {
-            completionHandler(nil)
-            return
+        initiatedByFrame frame: WKFrameInfo
+    ) async -> String? {
+        guard let presenter = webView.owningViewController else { return nil }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            let alert = UIAlertController(title: frame.securityOrigin.host, message: prompt, preferredStyle: .alert)
+            alert.addTextField { $0.text = defaultText }
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+                continuation.resume(returning: nil)
+            })
+            alert.addAction(UIAlertAction(title: "好", style: .default) { [weak alert] _ in
+                continuation.resume(returning: alert?.textFields?.first?.text)
+            })
+            presenter.present(alert, animated: true)
         }
-        let alert = UIAlertController(title: frame.securityOrigin.host, message: prompt, preferredStyle: .alert)
-        alert.addTextField { $0.text = defaultText }
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completionHandler(nil) })
-        alert.addAction(UIAlertAction(title: "好", style: .default) { [weak alert] _ in
-            completionHandler(alert?.textFields?.first?.text)
-        })
-        presenter.present(alert, animated: true)
     }
 }
 

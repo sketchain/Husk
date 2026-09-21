@@ -1,0 +1,73 @@
+name: Build
+
+# 除了 main 和手动触发，也跑 claude/** 分支——功能分支在合回去之前就能看到编译结果
+on:
+  push:
+    branches: [main, 'claude/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # macos-26 是 Apple Silicon 镜像（2026-02 起 GA），默认 Xcode 26.6，自带 iOS 26.x SDK。
+    # 本工程最低部署目标 iOS 18.0，用新 SDK 编译没问题。
+    runs-on: macos-26
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境信息
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i ios || true
+
+      # runner 镜像没预装 xcodegen
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 生成 Xcode 工程
+        run: |
+          xcodegen generate
+          xcodebuild -list -project Husk.xcodeproj
+
+      # 只编译不签名：CI 上没有证书也没有描述文件，产物交给本地自己签
+      # 只编译不签名：CI 上没有证书也没有描述文件，产物交给本地自己签
+      - name: 编译（未签名）
+        run: |
+          xcodebuild build \
+            -project Husk.xcodeproj \
+            -scheme Husk \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+      # .ipa 本质上就是个 zip，里面一个 Payload/ 目录装着 .app。
+      # 未签名的装不上设备，拿回本地用自己的证书签了才能用。
+      - name: 打包未签名 .ipa
+        run: |
+          APP="build/Build/Products/Release-iphoneos/Husk.app"
+          test -d "$APP" || { echo "没找到 $APP"; ls -R build/Build/Products || true; exit 1; }
+          rm -rf Payload && mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry Husk-unsigned.ipa Payload
+          ls -lh Husk-unsigned.ipa
+
+      - name: 上传产物
+        # v6 / v7 也可用，这里用 v4 图个稳
+        uses: actions/upload-artifact@v4
+        with:
+          name: Husk-unsigned-ipa-${{ github.sha }}
+          path: Husk-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30

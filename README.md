@@ -32,6 +32,26 @@ open Husk.xcodeproj
 
 个人开发者账号（免费）装上去，app 每 7 天过期一次，重新用 Xcode 装一下就行。
 
+### CI（GitHub Actions）
+
+`.github/workflows/build.yml`：push 到 `main` 或 `claude/**` 分支、以及手动触发时跑。
+
+- runner `macos-26`（Apple Silicon，2026-02 起 GA），默认 Xcode 26.6，自带 iOS 26.x SDK
+- `brew install xcodegen` → `xcodegen generate` → `xcodebuild build`
+- **只编译不签名**（`CODE_SIGNING_ALLOWED=NO`），CI 上没有证书
+- 产物是未签名的 `Husk-unsigned.ipa`（就是个 zip，里面 `Payload/Husk.app`），留存 30 天
+
+下载下来之后用你自己的证书签：
+
+```bash
+unzip -q Husk-unsigned.ipa
+codesign -f -s "Apple Development: 你的名字 (XXXXXXXXXX)" \
+  --entitlements your.entitlements Payload/Husk.app
+zip -qry Husk-signed.ipa Payload
+```
+
+或者直接把 `Payload/Husk.app` 丢给 Xcode / 你惯用的侧载工具。
+
 ---
 
 ## URL Scheme
@@ -136,6 +156,7 @@ Sources/
 | `pageZoom` 要在 `didFinish` 之后设，太早会被导航重置 | 同上 |
 | `customUserAgent` 改完要 `reload()` 才对当前页生效 | `WebKitLayer/WebSession.swift` |
 | 深色白闪：`isOpaque = false` + 深色 `backgroundColor` | 同上 |
+| **delegate 要用 async 变体**：iOS 18 起 WebKit 给 completion handler 加了 `@MainActor`，旧签名只"近似匹配"，编译器仅给 warning 而运行时**根本不调用** | `WebKitLayer/WebCoordinator.swift` |
 
 另外补了两个文档里不显眼的：
 
@@ -170,6 +191,56 @@ Sources/
 
 12. **没做拖拽排序** —— LazyVGrid 里的拖拽重排要手写命中测试和插入指示，在这个没有编译器验证的环境里做完全靠脑补，风险和收益不成比例。用长按菜单里的「移到最前」代替了。
 
+### 第二轮：代码评审揪出的三个问题
+
+初版合进去之后又过了一遍代码，这三处是真 bug，都已修掉：
+
+**a. 登录弹窗被自己甩进了 Safari。** `createWebViewWith` 里原本一上来就套用外链策略——
+而默认策略是"按域名判断"，登录弹窗十有八九开在 `accounts.google.com` 这类外域上。
+结果就是每个弹窗式 OAuth 都被丢进 Safari，`window.opener` 压根不存在了，用户在 Safari 里
+授权完，Husk 这边干等。等于把那段精心保住 opener 的代码整个废掉了，相当讽刺。
+
+现在：**弹窗一律留在站内的模态里，不套用外链策略。** 定性上也说得通——外链策略管的是
+"从这个站导航走"，而 `window.open` 开出来的是站点自己流程的一部分（授权、支付、打印预览），
+它和 opener 是绑定的。
+
+同一个问题的另一半：点"用 Google 登录"如果是普通链接（`.linkActivated`），照样会被甩出去。
+所以 `.sameDomain` 现在会识别登录流（专用登录域名、`/oauth` `/authorize` `/login` 之类的路径、
+`client_id` + `redirect_uri` 的参数组合）并放行。判断刻意放宽：最多是某个外站的登录页留在了
+站内（用户还能从工具箱丢去 Safari），判窄了就是登不上。`.safari` 策略不受影响——用户既然
+选了"全都甩出去"，就不替他耍小聪明。
+
+**b. 底边上滑几乎触发不了，而且和回桌面打架。** 起手位置判断用的是
+`gestureRecognizer.location(in:)`，但 UIKit 调到 `gestureRecognizerShouldBegin` 时 swipe
+**已经判定成立**了——手指早滑出去几十点，必然落在底部判定区之外。这个手势基本是死的。
+现在用 `BottomEdgeSwipeGestureRecognizer` 子类在 `touchesBegan` 里记下起手点。
+
+顺带把判定区从"底部 32pt"挪到了"底部安全区上方 48pt"：原来那一条和主屏指示器重叠，
+从那儿上滑会被系统当成回桌面。要抢过来得 `preferredScreenEdgesDeferringSystemGestures`，
+代价是用户真想回桌面得划两次——不如直接躲开。
+
+**c. `weixin://` 这类跳转点了没反应，以及广告 iframe 能把人弹去 App Store。**
+原本用 `canOpenURL` 做前置判断，而 iOS 9 起它对没写进 `LSApplicationQueriesSchemes` 的
+scheme 一律返回 false，那张表上限 50 条还得预先知道要查哪些——对一个开放的浏览容器
+根本没法穷举。`open` 本身不受这张表限制，现在直接调，打不开就在回调里提示一句。
+
+另外加了 `sourceFrame.isMainFrame` 判断：原来任何一个 iframe 往 `itms-apps://` 一跳就能
+把人弹去 App Store，这种劫持在广告里相当常见，现在来自子框架的非 web scheme 一律吞掉。
+
+**d（CI 跑出来的，比上面三条更凶险）**：四个 `WKNavigationDelegate` / `WKUIDelegate`
+方法写成了 completion handler 形式，编译只给一句 "nearly matches optional requirement"
+警告——但运行时**这些方法根本不会被调用**。也就是说外链拦截、scheme 跳转、JS 对话框
+会全部静默失效，而从现象几乎不可能反推到签名不匹配。原因是 iOS 18 起 WebKit 给这些
+回调加了 `@MainActor`。现在统一改用 async 变体（`decidePolicyFor` 直接返回
+`WKNavigationActionPolicy`，三个对话框内部用 `withCheckedContinuation` 包
+`UIAlertController`）——签名里没有闭包，就不存在追 SDK 标注的问题。
+
+这条特别值得记一笔：它是**只有真编译一次才会暴露**的问题，而且症状是"功能静默消失"
+而不是崩溃。也正因为这个，CI 这一步不是可有可无的。
+
+**顺带**：`isSameSite` 从纯后缀匹配换成了 eTLD+1 近似。原来站点地址填 `m.youtube.com` 时，
+点到 `youtube.com` 会被判成外站——只要站点配的是某个子域，它自己的主域和兄弟子域就全成了外链。
+
 ### 关于 UA 预设的版本号
 
 预设串是 **2026-09** 查证的真实值，不是编的。两件事值得知道：
@@ -181,7 +252,7 @@ Sources/
 
 ## 已知限制
 
-- **`.sameDomain` 的域名判断是后缀匹配，没接 Public Suffix List。** 对自己挑的十几个站够用，但别把它当安全边界。
+- **`.sameDomain` 的域名判断是 eTLD+1 近似，没接 Public Suffix List。** 内置了一张常见多段后缀表（`co.uk`、`com.cn` 之类），但像 `github.io` 这种"托管型"公共后缀没覆盖，`a.github.io` 和 `b.github.io` 会被算成同一站。对"链接在哪儿打开"这件事无所谓，别当安全边界用。
 - **`.ico` 里只装老式 BMP 子图的站点抓不到图标**，会往下退到 Google 服务或首字母图。写个 BMP 解码器不值当。
 - **`http://` 站点的图标抓不到** —— ATS 只对 WebView 内容放开了明文，app 侧的 URLSession 还是强制 HTTPS。这是有意的取舍。
 - **`pageZoom` 是整页缩放**，等价于 CSS `zoom`。用固定像素布局的站点放大后可能出横向滚动条，这是这个 API 的性质，不是 bug。

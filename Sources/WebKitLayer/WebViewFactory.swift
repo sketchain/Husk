@@ -62,6 +62,11 @@ enum WebViewFactory {
 enum ContentScripts {
     static let messageName = "husk"
 
+    // WKUserScript 是 @MainActor 隔离的，所以这个 static let 也得标上——
+    // 否则就是"在非隔离上下文里求值一个主线程隔离的默认值"，Swift 6 下直接报错。
+    // messageName 是个普通 String，不需要跟着隔离。
+    @MainActor
+
     /// 把页面根元素的背景色报回来，用它去刷 WebView 的 backgroundColor，
     /// 这样过度滚动（橡皮筋）露出来的那一条和页面同色，而不是一道突兀的黑边。
     static let backgroundReporter = WKUserScript(

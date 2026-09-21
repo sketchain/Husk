@@ -76,7 +76,12 @@ final class WebSession {
     }
 
     func notifyHandoff(_ host: String) {
-        handoffNotice = "已在 Safari 打开 \(host)"
+        notify("已在 Safari 打开 \(host)")
+    }
+
+    /// 底部那条一闪而过的提示
+    func notify(_ text: String) {
+        handoffNotice = text
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
             self?.handoffNotice = nil
