@@ -61,6 +61,10 @@ git tag v1.2.0
 git push origin v1.2.0
 ```
 
+没有本地仓库、或者推 tag 的权限受限时，也可以在 Actions 页面手动跑
+**Release** 这个 workflow，填上版本号（`v1.2.0`）——tag 不存在的话由 CI
+建在触发时所在的提交上，结果和上面完全一样。
+
 它会：
 
 1. 复用 `build.yml` 的编译步骤（`workflow_call`，不是复制一份）
