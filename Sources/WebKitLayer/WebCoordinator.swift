@@ -81,13 +81,11 @@ extension WebCoordinator: WKNavigationDelegate {
 
         let scheme = url.scheme?.lowercased()
 
-        // 非 web scheme（mailto: tel: itms-apps: 各种 app 跳转）交给系统，
+        // 非 web scheme（mailto: tel: weixin: itms-apps: 各种 app 跳转）交给系统，
         // WebView 自己处理不了，不拦的话就是一个"点了没反应"。
         if scheme != "http", scheme != "https", scheme != "about", scheme != "blob", scheme != "data" {
             decisionHandler(.cancel)
-            if UIApplication.shared.canOpenURL(url) {
-                UIApplication.shared.open(url)
-            }
+            openExternalApp(url, from: navigationAction)
             return
         }
 
@@ -120,9 +118,36 @@ extension WebCoordinator: WKNavigationDelegate {
     func shouldHandOffToSafari(_ url: URL) -> Bool {
         guard url.scheme == "http" || url.scheme == "https" else { return false }
         switch session.site.externalLinkPolicy {
-        case .inApp: return false
-        case .safari: return true
-        case .sameDomain: return !session.site.isSameSite(url)
+        case .inApp:
+            return false
+        case .safari:
+            // 字面意义的"全都甩出去"，用户既然选了这个就不替他耍小聪明
+            return true
+        case .sameDomain:
+            if session.site.isSameSite(url) { return false }
+            // 登录 / 授权流留在站内：甩进 Safari 的话回调落在 Safari，这边永远等不到
+            if Site.looksLikeAuthFlow(url) { return false }
+            return true
+        }
+    }
+
+    /// 把非 web scheme 交给系统。
+    ///
+    /// 两个坑：
+    /// 1. **不能用 `canOpenURL` 当前置判断**。iOS 9 起它对没写进 `LSApplicationQueriesSchemes`
+    ///    的 scheme 一律返回 false，而那张表上限 50 条、还得预先知道要查哪些——
+    ///    对一个开放的浏览容器根本没法穷举。结果就是 `weixin://`、`alipay://` 这类
+    ///    点了完全没反应。`open` 本身**不受**这张表限制，直接调就是了，
+    ///    打不开会在回调里给 false。
+    /// 2. **只认主框架发起的**。广告 iframe 往 `itms-apps://` 一跳就能把人弹去 App Store，
+    ///    这种劫持相当常见，来自子框架的一律吞掉。
+    private func openExternalApp(_ url: URL, from navigationAction: WKNavigationAction) {
+        guard navigationAction.sourceFrame.isMainFrame else { return }
+        Task { [weak session] in
+            let opened = await UIApplication.shared.open(url)
+            if !opened {
+                session?.notify("没有 app 能打开这个链接")
+            }
         }
     }
 

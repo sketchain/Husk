@@ -40,8 +40,26 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""                          # ← 填你的 Team ID，或在 Xcode 里选
         SUPPORTS_MACCATALYST: NO
-        SUPPORTS_XR_DESIGNED_FOR_IPHONE: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
         SWIFT_EMIT_LOC_STRINGS: YES
-    dependencies:
-      - sdk: WebKit.framework
-      - sdk: CryptoKit.framework
+    # 不写 dependencies：Swift 对 `import WebKit` / `import CryptoKit` 会自动链接，
+    # 手写 sdk 依赖只是多一处可能写错框架名的地方。
+
+# 显式定义 scheme。XcodeGen 默认不生成，而 Xcode 只在 GUI 里打开工程时才自动补，
+# CI 上直接 `xcodebuild -scheme Husk` 会报 scheme 不存在。
+schemes:
+  Husk:
+    build:
+      targets:
+        Husk: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

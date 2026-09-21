@@ -21,11 +21,16 @@ extension WebCoordinator: WKUIDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        // 弹窗目标要是按当前策略该交给 Safari，就别开模态了，直接甩出去
-        if let url = navigationAction.request.url, shouldHandOffToSafari(url) {
-            handOff(url)
-            return nil
-        }
+        // 这里**刻意不套用外链策略**。
+        //
+        // 之前这儿有一段"目标域名按策略该去 Safari 就直接甩出去"，看着合理，实际上把
+        // 下面那段关于 window.opener 的努力全废了：默认策略是"按域名判断"，而登录弹窗
+        // 十有八九开在 accounts.google.com 这类外域上，于是每一个弹窗式 OAuth 都会被
+        // 甩进 Safari——opener 根本不存在了，用户在 Safari 里授权完，Husk 这边干等。
+        //
+        // 定性上也说得通：外链策略管的是"从这个站导航走"，而 window.open 开出来的是
+        // **站点自己流程的一部分**（授权、支付、打印预览），它和 opener 有绑定关系。
+        // 所以弹窗一律留在站内的模态里，关掉就回原页。
 
         WebViewFactory.applyConfigurationExtras(to: configuration, handler: messageProxy)
         let popup = WKWebView(frame: .zero, configuration: configuration)
