@@ -1,10 +1,31 @@
 name: Build
 
-# 除了 main 和手动触发，也跑 claude/** 分支——功能分支在合回去之前就能看到编译结果
 on:
+  # 除了 main 和手动触发，也跑 claude/** 分支——功能分支在合回去之前就能看到编译结果
   push:
     branches: [main, 'claude/**']
   workflow_dispatch:
+    inputs:
+      version_tag:
+        description: '手动指定版本，例如 v1.2.0。留空则用 project.yml 里的版本号。'
+        type: string
+        required: false
+        default: ''
+  # 发版流程复用这整套步骤，见 release.yml
+  workflow_call:
+    inputs:
+      version_tag:
+        description: '版本 tag，例如 v1.2.0。留空则用 project.yml 里写死的版本号。'
+        type: string
+        required: false
+        default: ''
+    outputs:
+      artifact_name:
+        description: '产物 artifact 的名字，调用方下载时要用'
+        value: ${{ jobs.build.outputs.artifact_name }}
+      ipa_name:
+        description: '.ipa 的文件名'
+        value: ${{ jobs.build.outputs.ipa_name }}
 
 permissions:
   contents: read
@@ -19,6 +40,10 @@ jobs:
     # 本工程最低部署目标 iOS 18.0，用新 SDK 编译没问题。
     runs-on: macos-26
 
+    outputs:
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      ipa_name: ${{ steps.meta.outputs.ipa_name }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +52,27 @@ jobs:
           sw_vers
           xcodebuild -version
           xcodebuild -showsdks | grep -i ios || true
+
+      # 版本号只在发版时由 tag 决定；日常 push 保持 project.yml 里的值不动。
+      - name: 确定版本与文件名
+        id: meta
+        run: |
+          TAG="${{ inputs.version_tag }}"
+          if [ -n "$TAG" ]; then
+            VERSION="${TAG#v}"                       # v1.2.0 → 1.2.0
+            IPA="Husk-${VERSION}-unsigned.ipa"
+            ARTIFACT="Husk-${VERSION}-unsigned-ipa"
+          else
+            VERSION=""
+            IPA="Husk-unsigned.ipa"
+            ARTIFACT="Husk-unsigned-ipa-${GITHUB_SHA}"
+          fi
+          {
+            echo "version=$VERSION"
+            echo "ipa_name=$IPA"
+            echo "artifact_name=$ARTIFACT"
+          } >> "$GITHUB_OUTPUT"
+          echo "版本=${VERSION:-（沿用 project.yml）} 产物=$IPA"
 
       # runner 镜像没预装 xcodegen
       - name: 安装 XcodeGen
@@ -38,9 +84,17 @@ jobs:
           xcodebuild -list -project Husk.xcodeproj
 
       # 只编译不签名：CI 上没有证书也没有描述文件，产物交给本地自己签
-      # 只编译不签名：CI 上没有证书也没有描述文件，产物交给本地自己签
       - name: 编译（未签名）
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
+          # 有 tag 才覆盖版本号。注意这里 $OVERRIDES 是**故意不加引号**的：
+          # 要靠 shell 按空格拆成两个独立参数传给 xcodebuild，而版本号里不含空格。
+          # （另外 macOS 自带的是 bash 3.2，数组展开在空数组时容易踩坑，所以用字符串。）
+          OVERRIDES=""
+          if [ -n "$VERSION" ]; then
+            OVERRIDES="MARKETING_VERSION=$VERSION CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER"
+          fi
           xcodebuild build \
             -project Husk.xcodeproj \
             -scheme Husk \
@@ -50,24 +104,33 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO
+            ONLY_ACTIVE_ARCH=NO \
+            $OVERRIDES
 
       # .ipa 本质上就是个 zip，里面一个 Payload/ 目录装着 .app。
       # 未签名的装不上设备，拿回本地用自己的证书签了才能用。
       - name: 打包未签名 .ipa
+        env:
+          IPA: ${{ steps.meta.outputs.ipa_name }}
         run: |
           APP="build/Build/Products/Release-iphoneos/Husk.app"
           test -d "$APP" || { echo "没找到 $APP"; ls -R build/Build/Products || true; exit 1; }
+          # 确认版本号真的打进去了，别等发出去才发现还是 1.0
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
           rm -rf Payload && mkdir -p Payload
           cp -R "$APP" Payload/
-          zip -qry Husk-unsigned.ipa Payload
-          ls -lh Husk-unsigned.ipa
+          zip -qry "$IPA" Payload
+          ls -lh "$IPA"
 
       - name: 上传产物
-        # v6 / v7 也可用，这里用 v4 图个稳
+        # 注：checkout@v4 / upload-artifact@v4 基于 Node 20，GitHub 已宣布弃用，
+        # 目前被自动强制跑在 Node 24 上（日志里会有一条 warning），功能不受影响。
+        # 哪天真停了就把 checkout 升到 v5、upload 升到 v6+；
+        # 升 upload 的时候记得 release.yml 里的 download-artifact 要配套一起升。
         uses: actions/upload-artifact@v4
         with:
-          name: Husk-unsigned-ipa-${{ github.sha }}
-          path: Husk-unsigned.ipa
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: ${{ steps.meta.outputs.ipa_name }}
           if-no-files-found: error
           retention-days: 30

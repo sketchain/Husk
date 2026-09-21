@@ -1,0 +1,67 @@
+name: Release
+
+# 打个 v 开头的 tag 推上去就发版：
+#   git tag v1.2.0 && git push origin v1.2.0
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  # 不复制一份编译步骤，直接复用 build.yml（它开了 workflow_call）。
+  # 版本号从 tag 推出来，注入 MARKETING_VERSION。
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      version_tag: ${{ github.ref_name }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # 建 Release 要写权限。顶层是 read，这里按 job 单独放开。
+      contents: write
+
+    steps:
+      - name: 取回编译产物
+        # 版本要和 build.yml 里的 upload-artifact 配套，别单独升
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+
+      - name: 建 Release 并附上 .ipa
+        env:
+          # 用 runner 自带的 gh，不引第三方 action
+          GH_TOKEN: ${{ github.token }}
+          IPA: ${{ needs.build.outputs.ipa_name }}
+        run: |
+          test -f "$IPA" || { echo "没拿到 $IPA"; ls -la; exit 1; }
+
+          # 更新说明 = 一段未签名提示 + GitHub 按提交/PR 自动生成的那段。
+          #
+          # 刻意不用 `gh release create --generate-notes --notes "..."` 的组合：
+          # 同时给这两个参数时 gh 到底会不会把自动生成的部分带上，行为并不明确，
+          # 万一被吞掉就是"说明少了一半"且不报错。这里直接调 generate-notes 接口
+          # 自己拼，结果是确定的。
+          NOTES="$RUNNER_TEMP/notes.md"
+          {
+            echo "附件里的 \`$IPA\` 是**未签名**的，直接装不上设备——用自己的证书签过才能用，步骤见 README 的「CI」一节。"
+            echo
+            gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$GITHUB_REF_NAME" --jq .body \
+              || echo "_自动生成更新说明失败，看提交记录吧。_"
+          } > "$NOTES"
+
+          # 带连字符的 tag（v1.2.0-beta1 这种）按 semver 惯例标成预发布
+          PRERELEASE=""
+          case "$GITHUB_REF_NAME" in
+            *-*) PRERELEASE="--prerelease" ;;
+          esac
+
+          gh release create "$GITHUB_REF_NAME" "$IPA" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Husk $GITHUB_REF_NAME" \
+            --notes-file "$NOTES" \
+            $PRERELEASE

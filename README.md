@@ -52,6 +52,27 @@ zip -qry Husk-signed.ipa Payload
 
 或者直接把 `Payload/Husk.app` 丢给 Xcode / 你惯用的侧载工具。
 
+### 发版
+
+打个 `v` 开头的 tag 推上去就行，剩下的 `.github/workflows/release.yml` 全包了：
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+它会：
+
+1. 复用 `build.yml` 的编译步骤（`workflow_call`，不是复制一份）
+2. 把版本号从 tag 推出来注入编译：`v1.2.0` → `MARKETING_VERSION=1.2.0`，
+   `CURRENT_PROJECT_VERSION` 用 workflow 的运行序号；打包前会 `PlistBuddy` 读一遍确认写进去了
+3. 建一个 GitHub Release，标题 `Husk v1.2.0`，更新说明由 GitHub 按提交自动生成
+4. 把 `Husk-1.2.0-unsigned.ipa` 作为 **Release 附件**上传（不是 artifact，不会过期）
+
+tag 里带连字符的（`v1.2.0-beta1`）按 semver 惯例自动标成预发布。
+
+版本号只在发版时由 tag 决定，日常 push 到 `main` 走的还是 `project.yml` 里写死的值。
+
 ---
 
 ## URL Scheme
