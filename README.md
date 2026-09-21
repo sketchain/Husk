@@ -156,6 +156,7 @@ Sources/
 | `pageZoom` 要在 `didFinish` 之后设，太早会被导航重置 | 同上 |
 | `customUserAgent` 改完要 `reload()` 才对当前页生效 | `WebKitLayer/WebSession.swift` |
 | 深色白闪：`isOpaque = false` + 深色 `backgroundColor` | 同上 |
+| **delegate 要用 async 变体**：iOS 18 起 WebKit 给 completion handler 加了 `@MainActor`，旧签名只"近似匹配"，编译器仅给 warning 而运行时**根本不调用** | `WebKitLayer/WebCoordinator.swift` |
 
 另外补了两个文档里不显眼的：
 
@@ -225,6 +226,17 @@ scheme 一律返回 false，那张表上限 50 条还得预先知道要查哪些
 
 另外加了 `sourceFrame.isMainFrame` 判断：原来任何一个 iframe 往 `itms-apps://` 一跳就能
 把人弹去 App Store，这种劫持在广告里相当常见，现在来自子框架的非 web scheme 一律吞掉。
+
+**d（CI 跑出来的，比上面三条更凶险）**：四个 `WKNavigationDelegate` / `WKUIDelegate`
+方法写成了 completion handler 形式，编译只给一句 "nearly matches optional requirement"
+警告——但运行时**这些方法根本不会被调用**。也就是说外链拦截、scheme 跳转、JS 对话框
+会全部静默失效，而从现象几乎不可能反推到签名不匹配。原因是 iOS 18 起 WebKit 给这些
+回调加了 `@MainActor`。现在统一改用 async 变体（`decidePolicyFor` 直接返回
+`WKNavigationActionPolicy`，三个对话框内部用 `withCheckedContinuation` 包
+`UIAlertController`）——签名里没有闭包，就不存在追 SDK 标注的问题。
+
+这条特别值得记一笔：它是**只有真编译一次才会暴露**的问题，而且症状是"功能静默消失"
+而不是崩溃。也正因为这个，CI 这一步不是可有可无的。
 
 **顺带**：`isSameSite` 从纯后缀匹配换成了 eTLD+1 近似。原来站点地址填 `m.youtube.com` 时，
 点到 `youtube.com` 会被判成外站——只要站点配的是某个子域，它自己的主域和兄弟子域就全成了外链。
