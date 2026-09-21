@@ -1,10 +1,18 @@
 name: Release
 
-# 打个 v 开头的 tag 推上去就发版：
-#   git tag v1.2.0 && git push origin v1.2.0
+# 两种发版方式，结果一样：
+#   1. 打 tag 推上去：git tag v1.2.0 && git push origin v1.2.0
+#   2. 在 Actions 页面手动跑这个 workflow，填版本号——tag 不存在时由 CI 建在
+#      触发时所在的提交上。没有本地仓库、或者推 tag 的权限受限时用这条。
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要发布的版本，例如 v0.1.0（tag 不存在会自动建在当前提交上）'
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -15,7 +23,8 @@ jobs:
   build:
     uses: ./.github/workflows/build.yml
     with:
-      version_tag: ${{ github.ref_name }}
+      # tag 触发时 inputs 为空，取 ref_name；手动触发时取填的版本号
+      version_tag: ${{ inputs.version || github.ref_name }}
 
   publish:
     needs: build
@@ -36,6 +45,7 @@ jobs:
           # 用 runner 自带的 gh，不引第三方 action
           GH_TOKEN: ${{ github.token }}
           IPA: ${{ needs.build.outputs.ipa_name }}
+          VERSION: ${{ inputs.version || github.ref_name }}
         run: |
           test -f "$IPA" || { echo "没拿到 $IPA"; ls -la; exit 1; }
 
@@ -49,19 +59,23 @@ jobs:
           {
             echo "附件里的 \`$IPA\` 是**未签名**的，直接装不上设备——用自己的证书签过才能用，步骤见 README 的「CI」一节。"
             echo
+            # target_commitish 在 tag 尚不存在时是必填的（手动触发就是这种情况）
             gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
-              -f tag_name="$GITHUB_REF_NAME" --jq .body \
+              -f tag_name="$VERSION" -f target_commitish="$GITHUB_SHA" --jq .body \
               || echo "_自动生成更新说明失败，看提交记录吧。_"
           } > "$NOTES"
 
           # 带连字符的 tag（v1.2.0-beta1 这种）按 semver 惯例标成预发布
           PRERELEASE=""
-          case "$GITHUB_REF_NAME" in
+          case "$VERSION" in
             *-*) PRERELEASE="--prerelease" ;;
           esac
 
-          gh release create "$GITHUB_REF_NAME" "$IPA" \
+          # --target 只在 tag 不存在时起作用（由它决定建在哪个提交上），
+          # tag 已存在时 GitHub 会忽略，所以两条触发路径都能用同一行。
+          gh release create "$VERSION" "$IPA" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "Husk $GITHUB_REF_NAME" \
+            --target "$GITHUB_SHA" \
+            --title "Husk $VERSION" \
             --notes-file "$NOTES" \
             $PRERELEASE
