@@ -183,7 +183,6 @@ extension Site {
         )
     }
 
-    /// 用户输入的地址规范化：光打 "example.com" 也要能用
     /// 这次导航看着像不像在走登录 / 授权流程。
     ///
     /// 为什么需要这个判断：`.sameDomain` 策略下，点"用 Google 登录"跳到 `accounts.google.com`
@@ -225,6 +224,7 @@ extension Site {
         "/login", "/signin", "/sign_in", "/session/new",
     ]
 
+    /// 用户输入的地址规范化：光打 "example.com" 也要能用
     static func normalizeInput(_ raw: String) -> URL? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
