@@ -5,6 +5,12 @@ on:
   push:
     branches: [main, 'claude/**']
   workflow_dispatch:
+    inputs:
+      version_tag:
+        description: '手动指定版本，例如 v1.2.0。留空则用 project.yml 里的版本号。'
+        type: string
+        required: false
+        default: ''
   # 发版流程复用这整套步骤，见 release.yml
   workflow_call:
     inputs:
