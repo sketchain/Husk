@@ -124,7 +124,7 @@ struct LabView: View {
 
             if overlay.baseIsEstimate {
                 Label(
-                    "基准矩形是**估计值**（126 × 37.33，距顶 11，水平居中），不是从 _exclusionArea 读出来的",
+                    "基准矩形是**估计值**（125 × 36.67，距顶 14，水平居中——iPhone 16 Pro 上实测的那组），不是从 _exclusionArea 读出来的",
                     systemImage: "info.circle"
                 )
                 .font(.caption)
@@ -142,7 +142,14 @@ struct LabView: View {
 
             // 包一层 Group 纯粹是为了别把 Section 的直接子视图顶过 ViewBuilder 的 10 个上限
             Group {
-                slider("圆角半径", value: bindable.adjustments.cornerRadius, in: 0...40)
+                // 超过高度一半就被 RoundedRectangle 夹成胶囊了，再往上拖没有任何区别——
+                // 不标出来的话会以为"圆角 24 和 40 长得一样"是自己看错了
+                slider(
+                    "圆角半径",
+                    value: bindable.adjustments.cornerRadius,
+                    in: 0...40,
+                    hint: overlay.cornerRadiusIsClamped ? "已夹成胶囊" : nil
+                )
                 slider("向外扩", value: bindable.adjustments.outset, in: -8...16)
                 slider("X 偏移", value: bindable.adjustments.offsetX, in: -24...24)
                 slider("Y 偏移", value: bindable.adjustments.offsetY, in: -24...24)
@@ -167,17 +174,24 @@ struct LabView: View {
     private func slider(
         _ title: String,
         value: Binding<CGFloat>,
-        in range: ClosedRange<CGFloat>
+        in range: ClosedRange<CGFloat>,
+        hint: String? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
+                if let hint {
+                    Text(hint)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
                 Spacer()
                 Text(DynamicIslandProbe.fmt(value.wrappedValue))
                     .monospacedDigit()
                     .foregroundStyle(Theme.secondaryText)
             }
-            Slider(value: value, in: range, step: 0.25)
+            // 步长 0.1：0.25 那档在真机上明显不够细，贴不到严丝合缝
+            Slider(value: value, in: range, step: 0.1)
         }
     }
 

@@ -219,9 +219,28 @@ tab bar 上方有一条 **`tabViewBottomAccessory`**「继续上次」：上次�
 
 - **KVC 每一跳都先 `responds(to:)`**。对不存在的 key 调 `value(forKey:)` 抛的是 ObjC 的 `NSUnknownKeyException`，Swift 的 `do-catch` 根本接不住，结果是直接闪退。私有 API 随时会改名、换类型或消失，所以每一步都先确认选择器在，不在就带着"卡在哪一步"原地返回。取出来的 `NSValue` 还要比一遍 `objCType` 再碰 `cgRectValue`——类型对不上时它不是返回 nil 而是崩。
 - **描边挂在自己的 `UIWindow` 上**，不是 SwiftUI 的 `.overlay`。要在离开这一页之后还看得见，否则页面自己的导航栏就挡在灵动岛底下，根本没法观察。窗口 `hitTest` 永远返回 nil（触摸全部穿透，UI 照常能用），并且**不** `makeKeyAndVisible`（key window 仍是 SwiftUI 那个，状态栏归它管，浏览页的「隐藏状态栏」不受影响），层级压在 `.normal + 1`。
-- **读不到时退回估计值**并在页面上明确标注"这是估计值不是读取值"：灵动岛机型上那颗胶囊普遍是 126 × 37.33 pt、距顶 11 pt、水平居中。
+- **读不到时退回估计值**并在页面上明确标注"这是估计值不是读取值"，用的是下面实测出来的那组数。
 
 校准参数存 `UserDefaults`，刻意不进 `AppSettings`——调试用的临时值，不该混进导出的配置 JSON。
+
+这一页**长期保留**，不随进度环一起删——换机型、换系统版本都得重新验一遍。
+
+### 已测得
+
+**iPhone 16 Pro（`iPhone17,1`）/ iOS 26.6.2 / 402 × 874 @3x：**
+
+| 项 | 值 |
+|---|---|
+| `_exclusionArea` 类型 | `UISDisplaySingleRectShape` |
+| `rect` | `{138.333, 14, 125, 36.6667}` |
+| `safeAreaInsets.top` | 62 |
+| `_displayCornerRadius` | 62 |
+
+人眼校准的结论：**可见的那颗黑色胶囊 = 这个 rect 向外扩 1pt，圆角走胶囊**，也就是 `(137.33, 13, 127, 38.67)`；x / y 都不需要额外偏移。
+
+所以 `_exclusionArea` 给的避让区比眼睛看到的边缘**整整小一圈 1pt**。之后做进度环时，环要贴的是扩 1pt 之后那个胶囊，不是原始 rect。
+
+顺带一个容易看走眼的点：`RoundedRectangle` 的圆角半径超过高度一半就会被夹成胶囊，所以圆角调到 24 和调到 40 画出来完全一样。页面上现在会在夹住时标一行「已夹成胶囊」。
 
 ---
 
