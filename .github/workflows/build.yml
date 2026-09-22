@@ -37,7 +37,8 @@ concurrency:
 jobs:
   build:
     # macos-26 是 Apple Silicon 镜像（2026-02 起 GA），默认 Xcode 26.6，自带 iOS 26.x SDK。
-    # 本工程最低部署目标 iOS 18.0，用新 SDK 编译没问题。
+    # 本工程最低部署目标 iOS 26.0（Liquid Glass、TabView 新特性、App Intents 的
+    # scene 派发都只在 26 上有），所以必须是带 iOS 26 SDK 的镜像。
     runs-on: macos-26
 
     outputs:

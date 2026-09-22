@@ -6,7 +6,6 @@ xcuserdata/
 DerivedData/
 build/
 *.xcuserstate
-*.mobileconfig
 
 # macOS
 .DS_Store

@@ -2,6 +2,9 @@ import PhotosUI
 import SwiftUI
 
 /// 单个站点的设置。新建和编辑共用。
+///
+/// 只管"名字 / 地址 / 图标"和维护动作；缩放、UA、外链、存储那四组在
+/// `SiteSettingsSections` 里，因为工具箱 sheet 的大档位也要用同一份。
 struct SiteEditorView: View {
     enum Mode { case create, edit }
 
@@ -11,13 +14,8 @@ struct SiteEditorView: View {
 
     @State private var draft: Site
     @State private var urlText: String
-    @State private var uaSelection: UserAgentPreset?
-    @State private var customUA: String
-    @State private var sharesProfile: Bool
-    @State private var profileText: String
     @State private var photoItem: PhotosPickerItem?
-    @State private var webClipFile: ExportedFile?
-    @State private var storageNotice: String?
+    @State private var notice: String?
 
     let mode: Mode
     let onSave: (Site) -> Void
@@ -25,11 +23,6 @@ struct SiteEditorView: View {
     init(site: Site, mode: Mode, onSave: @escaping (Site) -> Void) {
         _draft = State(initialValue: site)
         _urlText = State(initialValue: mode == .create ? "" : site.url.absoluteString)
-        let preset = UserAgentPreset.matching(site.userAgent)
-        _uaSelection = State(initialValue: preset)
-        _customUA = State(initialValue: preset == nil ? (site.userAgent ?? "") : "")
-        _sharesProfile = State(initialValue: site.profile != site.id.uuidString)
-        _profileText = State(initialValue: site.profile != site.id.uuidString ? site.profile : "")
         self.mode = mode
         self.onSave = onSave
     }
@@ -38,14 +31,10 @@ struct SiteEditorView: View {
         Form {
             basicsSection
             iconSection
-            zoomSection
-            userAgentSection
-            linkSection
-            profileSection
+            // 草稿在保存时才写盘，所以 commit 是空操作
+            SiteSettingsSections(site: $draft, commit: {})
             if mode == .edit { maintenanceSection }
         }
-        .scrollContentBackground(.hidden)
-        .background(Theme.background)
         .navigationTitle(mode == .create ? "新建站点" : "站点设置")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -56,8 +45,10 @@ struct SiteEditorView: View {
                 Button("保存") { save() }.disabled(!isValid)
             }
         }
-        .sheet(item: $webClipFile) { file in ShareSheet(items: [file.url]) }
         .onChange(of: photoItem) { _, item in loadPickedImage(item) }
+        .overlay(alignment: .bottom) {
+            if let notice { GlassToast(text: notice).padding(.bottom, 16) }
+        }
     }
 
     private var isValid: Bool { Site.normalizeInput(urlText) != nil }
@@ -128,6 +119,7 @@ struct SiteEditorView: View {
         }
     }
 
+    @MainActor
     private func loadPickedImage(_ item: PhotosPickerItem?) {
         guard let item else { return }
         Task {
@@ -140,100 +132,20 @@ struct SiteEditorView: View {
         }
     }
 
-    // MARK: - 缩放 / UA / 外链 / profile
-
-    private var zoomSection: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("缩放")
-                    Spacer()
-                    Text("\(Int((draft.zoom * 100).rounded()))%")
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.secondaryText)
-                }
-                Slider(value: $draft.zoom, in: Site.zoomRange, step: 0.05)
-            }
-        } footer: {
-            Text("走 WKWebView 的 pageZoom，等价于给整页加 CSS zoom，不是改 viewport。")
-        }
-    }
-
-    private var userAgentSection: some View {
-        Section {
-            Picker("UA", selection: $uaSelection) {
-                Text("自定义").tag(UserAgentPreset?.none)
-                ForEach(UserAgentPreset.allCases) { preset in
-                    Text(preset.title).tag(UserAgentPreset?.some(preset))
-                }
-            }
-            if uaSelection == nil {
-                TextField("粘贴 UA 串", text: $customUA, axis: .vertical)
-                    .lineLimit(2...5)
-                    .font(.caption.monospaced())
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-            } else if let note = uaSelection?.note {
-                Text(note).font(.caption).foregroundStyle(Theme.secondaryText)
-            }
-        } header: {
-            Text("User-Agent")
-        } footer: {
-            Text("改完会重新加载当前页——customUserAgent 只影响之后发出的请求。")
-        }
-    }
-
-    private var linkSection: some View {
-        Section {
-            Picker("外链", selection: $draft.externalLinkPolicy) {
-                ForEach(ExternalLinkPolicy.allCases) { policy in
-                    Text(policy.title).tag(policy)
-                }
-            }
-            Text(draft.externalLinkPolicy.subtitle)
-                .font(.caption)
-                .foregroundStyle(Theme.secondaryText)
-        } header: {
-            Text("外链行为")
-        } footer: {
-            Text("只对你点出来的主框架链接生效，iframe、重定向、资源请求一律不拦。")
-        }
-    }
-
-    private var profileSection: some View {
-        Section {
-            Toggle("和其他站点共享存储", isOn: $sharesProfile)
-            if sharesProfile {
-                TextField("profile 名（相同即共享）", text: $profileText)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-            }
-        } header: {
-            Text("存储")
-        } footer: {
-            Text(sharesProfile
-                 ? "填同一个名字的站点共用 cookie 和本地存储，适合同一家的几个域名。"
-                 : "默认每个站点一份独立存储，登录状态互不可见。")
-        }
-    }
+    // MARK: - 维护
 
     private var maintenanceSection: some View {
-        Section {
+        Section("维护") {
             Button {
-                exportWebClip()
+                saveIconToPhotos()
             } label: {
-                Label("导出 Web Clip", systemImage: "square.and.arrow.down")
+                Label("存储图标到相册", systemImage: "square.and.arrow.down")
             }
             Button(role: .destructive) {
                 clearStorage()
             } label: {
                 Label("清除本站存储", systemImage: "trash")
             }
-            if let storageNotice {
-                Text(storageNotice).font(.caption).foregroundStyle(Theme.secondaryText)
-            }
-        } header: {
-            Text("维护")
         }
     }
 
@@ -245,33 +157,47 @@ struct SiteEditorView: View {
         if draft.name.trimmingCharacters(in: .whitespaces).isEmpty {
             draft.name = Site.normalizedHost(of: url) ?? "站点"
         }
-        draft.userAgent = uaSelection.map(\.value) ?? (customUA.isEmpty ? nil : customUA)
-        let trimmedProfile = profileText.trimmingCharacters(in: .whitespacesAndNewlines)
-        draft.profile = (sharesProfile && !trimmedProfile.isEmpty) ? trimmedProfile : draft.id.uuidString
         onSave(draft)
         dismiss()
     }
 
-    private func exportWebClip() {
-        guard let url = try? WebClipBuilder.writeProfile(
-            for: [draft],
-            iconProvider: { icons.pngData(for: $0) },
-            fileName: "\(WebClipBuilder.safeFileName(draft.name)).mobileconfig"
-        ) else { return }
-        webClipFile = ExportedFile(url: url)
+    @MainActor
+    private func saveIconToPhotos() {
+        guard let png = icons.homeScreenIconPNG(for: draft) else {
+            showNotice("生成图标失败")
+            return
+        }
+        Task {
+            do {
+                try await PhotoLibrarySaver.save(png: png)
+                showNotice("已存进相册，1024×1024")
+            } catch {
+                showNotice(error.localizedDescription)
+            }
+        }
     }
 
+    @MainActor
     private func clearStorage() {
         let profile = draft.profile
-        storageNotice = "正在清除…"
+        showNotice("正在清除…")
         Task {
             do {
                 try await WebsiteDataStoreManager.shared.removeProfile(profile)
-                storageNotice = "已清除。下次打开这个站点会是全新状态。"
+                showNotice("已清除。下次打开这个站点会是全新状态。")
             } catch {
                 // 站点页面还开着的时候会走到这里：store 还被 WebView 抓着
-                storageNotice = "清除失败：这个站点可能还开着，回到列表再试。"
+                showNotice("清除失败：这个站点可能还开着，回到列表再试。")
             }
+        }
+    }
+
+    @MainActor
+    private func showNotice(_ message: String) {
+        withAnimation { notice = message }
+        Task {
+            try? await Task.sleep(for: .seconds(2.4))
+            withAnimation { notice = nil }
         }
     }
 }

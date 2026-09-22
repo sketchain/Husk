@@ -6,15 +6,23 @@ struct AppSettings: Codable, Hashable, Sendable {
     var newSiteDefaults: SiteDefaults
     /// 抓不到站点自己的图标时，是否允许回退到 Google 的 favicon 服务（会把域名发给 Google）
     var allowGoogleFaviconFallback: Bool
+    /// 浏览网页时把状态栏（时间、电池那条）整条藏掉
+    var hideStatusBarWhileBrowsing: Bool
+    /// 上一次打开过的站点，首页底部"继续上次"用它。没有记录时那一条不显示。
+    var lastOpenedSiteID: UUID?
 
     init(
         gestures: GestureSettings = GestureSettings(),
         newSiteDefaults: SiteDefaults = SiteDefaults(),
-        allowGoogleFaviconFallback: Bool = true
+        allowGoogleFaviconFallback: Bool = true,
+        hideStatusBarWhileBrowsing: Bool = false,
+        lastOpenedSiteID: UUID? = nil
     ) {
         self.gestures = gestures
         self.newSiteDefaults = newSiteDefaults
         self.allowGoogleFaviconFallback = allowGoogleFaviconFallback
+        self.hideStatusBarWhileBrowsing = hideStatusBarWhileBrowsing
+        self.lastOpenedSiteID = lastOpenedSiteID
     }
 
     init(from decoder: any Decoder) throws {
@@ -22,6 +30,8 @@ struct AppSettings: Codable, Hashable, Sendable {
         gestures = try c.decodeIfPresent(GestureSettings.self, forKey: .gestures) ?? GestureSettings()
         newSiteDefaults = try c.decodeIfPresent(SiteDefaults.self, forKey: .newSiteDefaults) ?? SiteDefaults()
         allowGoogleFaviconFallback = try c.decodeIfPresent(Bool.self, forKey: .allowGoogleFaviconFallback) ?? true
+        hideStatusBarWhileBrowsing = try c.decodeIfPresent(Bool.self, forKey: .hideStatusBarWhileBrowsing) ?? false
+        lastOpenedSiteID = try c.decodeIfPresent(UUID.self, forKey: .lastOpenedSiteID)
     }
 }
 
@@ -66,6 +76,7 @@ struct SiteDefaults: Codable, Hashable, Sendable {
     var zoom: Double
     var userAgent: String?
     var externalLinkPolicy: ExternalLinkPolicy
+    var linkScope: LinkScopeStrictness
     /// true = 每个新站用自己的 id 当 profile（完全隔离）
     var isolateStoragePerSite: Bool
 
@@ -73,11 +84,13 @@ struct SiteDefaults: Codable, Hashable, Sendable {
         zoom: Double = 1.0,
         userAgent: String? = nil,
         externalLinkPolicy: ExternalLinkPolicy = .sameDomain,
+        linkScope: LinkScopeStrictness = .registrableDomain,
         isolateStoragePerSite: Bool = true
     ) {
         self.zoom = zoom
         self.userAgent = userAgent
         self.externalLinkPolicy = externalLinkPolicy
+        self.linkScope = linkScope
         self.isolateStoragePerSite = isolateStoragePerSite
     }
 
@@ -86,6 +99,7 @@ struct SiteDefaults: Codable, Hashable, Sendable {
         zoom = (try c.decodeIfPresent(Double.self, forKey: .zoom) ?? 1.0).clamped(to: Site.zoomRange)
         userAgent = try c.decodeIfPresent(String.self, forKey: .userAgent)
         externalLinkPolicy = try c.decodeIfPresent(ExternalLinkPolicy.self, forKey: .externalLinkPolicy) ?? .sameDomain
+        linkScope = try c.decodeIfPresent(LinkScopeStrictness.self, forKey: .linkScope) ?? .registrableDomain
         isolateStoragePerSite = try c.decodeIfPresent(Bool.self, forKey: .isolateStoragePerSite) ?? true
     }
 }

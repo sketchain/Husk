@@ -35,7 +35,7 @@ struct StorageMaintenanceView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(group.sites.map(\.name).joined(separator: "、"))
-                                .foregroundStyle(Theme.primaryText)
+                                .foregroundStyle(.primary)
                             Text(group.sites.count > 1 ? "共享存储的 \(group.sites.count) 个站点" : "独立存储")
                                 .font(.caption2)
                                 .foregroundStyle(Theme.secondaryText)
@@ -87,8 +87,6 @@ struct StorageMaintenanceView: View {
                 Text("每一份具名存储都会删掉，默认存储（临时站点用的）会被清空——它按设计就是删不掉的，只能清内容。")
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(Theme.background)
         .navigationTitle("存储管理")
         .navigationBarTitleDisplayMode(.inline)
         .disabled(busy)
@@ -152,12 +150,7 @@ struct StorageMaintenanceView: View {
     @ViewBuilder
     private var noticeToast: some View {
         if let notice {
-            Text(notice)
-                .font(.footnote.weight(.medium))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial, in: Capsule())
-                .padding(.bottom, 24)
+            GlassToast(text: notice).padding(.bottom, 24)
         }
     }
 }

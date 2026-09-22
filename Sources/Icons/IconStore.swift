@@ -9,6 +9,11 @@ import UIKit
 @MainActor
 @Observable
 final class IconStore {
+    /// 单例。App Intents 的实体查询要在没有任何 SwiftUI 视图的情况下取图标。
+    static let shared = IconStore()
+
+    private init() {}
+
     /// **故意不被观察**：`image(for:)` 会在 SwiftUI 的 body 求值过程中被调用，
     /// 顺手把解析结果写回缓存。要是这个字典参与观察，就成了"渲染中读又写同一份状态"，
     /// 轻则运行时警告，重则无限重渲染。
@@ -75,9 +80,31 @@ final class IconStore {
         generation &+= 1
     }
 
-    /// 导出 Web Clip 要的 PNG data
+    /// 原样的 PNG data
     func pngData(for site: Site) -> Data? {
         image(for: site).pngData()
+    }
+
+    /// 存到相册用的 1024×1024 主屏图标。
+    ///
+    /// 这里**刻意不用 `image(for:)`**：它抓不到图标时会返回一张 180 像素的占位图，
+    /// 而占位图和真图标在那个返回值上分不出来——导出那边会把它当成"一张 180 的源图"
+    /// 放大到 1024，结果是一个糊掉的字母。走 `loadFromDisk` 就只有真存在的
+    /// 抓取缓存或自选图片才返回，抓不到就是 nil，交给导出那边按占位图风格**重画**一张。
+    func homeScreenIconPNG(for site: Site) -> Data? {
+        IconExporter.makeIcon(for: site, source: loadFromDisk(site))
+    }
+
+    /// 快捷指令列表里那张小图。太大的话会让整个实体列表变得很重，缩到 128 足够。
+    func thumbnailPNG(for site: Site, side: CGFloat = 128) -> Data? {
+        let source = image(for: site)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format)
+        return renderer.image { _ in
+            source.draw(in: CGRect(x: 0, y: 0, width: side, height: side))
+        }.pngData()
     }
 
     // MARK: - 私有

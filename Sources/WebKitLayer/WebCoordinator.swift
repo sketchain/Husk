@@ -109,20 +109,10 @@ extension WebCoordinator: WKNavigationDelegate {
         return .cancel
     }
 
+    /// 判断逻辑整个在 `Site.destination(for:)` 里：手动例外 → 档位 → 登录流放行。
+    /// 放在模型上而不是这儿，是为了让它不依赖 WebKit，将来加测试也方便。
     func shouldHandOffToSafari(_ url: URL) -> Bool {
-        guard url.scheme == "http" || url.scheme == "https" else { return false }
-        switch session.site.externalLinkPolicy {
-        case .inApp:
-            return false
-        case .safari:
-            // 字面意义的"全都甩出去"，用户既然选了这个就不替他耍小聪明
-            return true
-        case .sameDomain:
-            if session.site.isSameSite(url) { return false }
-            // 登录 / 授权流留在站内：甩进 Safari 的话回调落在 Safari，这边永远等不到
-            if Site.looksLikeAuthFlow(url) { return false }
-            return true
-        }
+        session.site.destination(for: url) == .safari
     }
 
     /// 把非 web scheme 交给系统。
