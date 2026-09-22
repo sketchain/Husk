@@ -4,16 +4,30 @@ import UIKit
 
 /// 读不到 `_exclusionArea` 时的兜底估计值。
 ///
-/// 灵动岛机型上那颗胶囊普遍是 **126 × 37.33 pt、距屏幕顶 11 pt、水平居中**
-/// （各家设计资料里反复出现的同一组数），和机型宽度无关。
+/// 这组数来自真机实测（见下面的"已测得"），不是设计资料上的约数：
+/// **125 × 36.6667 pt、距屏幕顶 14 pt、水平居中**。
+/// 灵动岛那颗胶囊在各机型上是同一个物理尺寸，所以和屏幕宽度无关，只有 x 要居中算。
 ///
-/// 这是**估计值，不是读出来的**，页面上会明确标出来。
+/// 这仍然是**估计值，不是读出来的**，页面上会明确标出来。
+///
+/// ## 已测得（iPhone 16 Pro / iPhone17,1 / iOS 26.6.2，402 × 874 @3x）
+///
+/// - `_exclusionArea` → `UISDisplaySingleRectShape`，`rect = {138.333, 14, 125, 36.6667}`
+/// - `safeAreaInsets.top = 62`、`_displayCornerRadius = 62`
+/// - 人眼校准结果：**可见的黑色胶囊 = 这个 rect 向外扩 1pt，圆角走胶囊**，
+///   也就是 `(137.33, 13, 127, 38.67)`。x/y 都不需要额外偏移。
+///
+/// 换句话说 `_exclusionArea` 给的避让区比眼睛看到的边缘**整整小一圈 1pt**。
+/// 之后做进度环时环的内边缘应该贴在扩 1pt 之后的那个胶囊上，而不是原始 rect。
 ///
 /// 单独放在 `IslandOverlayController` 外面：它要被非 MainActor 的
 /// `IslandAdjustments` 拿去当默认参数，塞进 `@MainActor` 的类里就够不着了。
 enum IslandEstimate {
-    static let size = CGSize(width: 126, height: 37.33)
-    static let topInset: CGFloat = 11
+    static let size = CGSize(width: 125, height: 36.6667)
+    static let topInset: CGFloat = 14
+
+    /// 实测出来的"避让区 → 可见胶囊"的外扩量
+    static let visibleOutset: CGFloat = 1
 
     static func rect(screenWidth: CGFloat) -> CGRect {
         CGRect(
@@ -24,8 +38,8 @@ enum IslandEstimate {
         )
     }
 
-    /// 探不到 scene 时拿来占位的屏幕宽度（多数灵动岛机型的竖屏宽度）
-    static let fallbackScreenWidth: CGFloat = 393
+    /// 探不到 scene 时拿来占位的屏幕宽度（iPhone 16 Pro 的竖屏宽度）
+    static let fallbackScreenWidth: CGFloat = 402
 }
 
 /// 描边的可调参数。做成一个整体而不是六个散落的属性，是为了能一次
@@ -98,6 +112,12 @@ final class IslandOverlayController {
 
     var cornerStyle: RoundedCornerStyle {
         adjustments.usesCircularCorners ? .circular : .continuous
+    }
+
+    /// 圆角半径超过描边矩形高度的一半时，`RoundedRectangle` 会把它夹成胶囊，
+    /// 再往上调没有任何视觉区别。页面上要标出来，不然会以为是自己看错了。
+    var cornerRadiusIsClamped: Bool {
+        adjustments.cornerRadius >= outlinedRect.height / 2
     }
 
     // MARK: - 生命周期
