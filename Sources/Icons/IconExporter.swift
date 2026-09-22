@@ -14,10 +14,15 @@ enum IconExporter {
 
     /// 源图小于这个像素数就不往上放了。
     ///
-    /// 256 → 1024 是 4 倍，但系统最终会把它缩回 180pt 左右显示，
-    /// 等价于 256 → 540 的放大，肉眼基本看不出。再小（很多站点的 favicon 只有
-    /// 64 或 32）放到 1024 就是一团糊，那还不如按占位图风格重画一张干净的。
-    static let minimumSourcePixels: CGFloat = 256
+    /// 门槛该定在哪儿，要按**最终显示尺寸**算而不是按 1024 算：主屏图标显示出来
+    /// 大约 180pt，3x 屏上是 540 像素。所以 180 的 apple-touch-icon（最常见的一种）
+    /// 实际是 180 → 540 的 3 倍放大，偏软但认得出，用它比给人一个字母强；
+    /// 而 32 / 64 的 favicon 是 8 倍以上，那就真是一团糊了。
+    ///
+    /// 128 是这两者之间的界线。注意这条门槛只有在图标缓存"只缩不放"时才有意义
+    /// （见 `IconFetcher.targetSize`）——缓存要是统一放大到固定尺寸，
+    /// 这里读到的像素数就和源图的真实清晰度没关系了。
+    static let minimumSourcePixels: CGFloat = 128
 
     /// 生成 PNG。`source` 传首页上显示的那张图。
     static func makeIcon(for site: Site, source: UIImage?) -> Data? {

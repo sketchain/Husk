@@ -5,11 +5,18 @@ import UIKit
 ///
 /// 整个类型标成 `@MainActor` 是有意的：UIImage / CGImage 都不是 Sendable，
 /// 让它们跨 actor 走只会换来一堆 `@unchecked` 或者把图搬进 Data 再搬出来。
-/// 图标就 180 像素见方，解码开销可以忽略，而网络等待期间 `await` 本来就把主线程让出去了。
+/// 图标最多 512 像素见方，解码开销可以忽略，而网络等待期间 `await` 本来就把主线程让出去了。
 @MainActor
 enum IconFetcher {
-    /// 目标边长：iOS 主屏图标最大用到 180pt，超过没意义
-    static let targetSize: CGFloat = 180
+    /// 缓存边长的**上限**，不是固定值。
+    ///
+    /// 以前这里写死 180（"主屏图标最大用到 180pt，超过没意义"），后来"存图标到相册"
+    /// 要拿 1024 的原图，180 就不够了——而且更糟的是：写死尺寸会把 32 像素的
+    /// favicon 也放大成 180，缓存文件的像素数从此和源图的真实清晰度脱钩，
+    /// 导出那边就没法判断"这张图值不值得放到 1024"。
+    ///
+    /// 所以现在是上限：**只缩不放**，缓存文件多大就代表源图真有多清楚。
+    static let targetSize: CGFloat = 512
 
     struct Outcome: Sendable {
         let pngData: Data
@@ -128,7 +135,9 @@ enum IconFetcher {
         let decodable = ICOUnpacker.extractLargestPNG(from: data) ?? data
         guard let image = UIImage(data: decodable), image.size.width > 8, image.size.height > 8 else { return nil }
 
-        let side = targetSize
+        // 只缩不放：边长取"源图长边"和上限里小的那个
+        let sourceSide = max(image.size.width * image.scale, image.size.height * image.scale)
+        let side = min(targetSize, sourceSide).rounded()
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = false
