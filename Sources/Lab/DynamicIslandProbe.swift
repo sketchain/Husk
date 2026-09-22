@@ -81,7 +81,13 @@ enum DynamicIslandProbe {
         report.fields.append(LabField(label: "UIScreen.bounds", value: format(screen.bounds)))
         report.fields.append(LabField(label: "UIScreen.nativeBounds", value: format(screen.nativeBounds)))
         report.fields.append(LabField(label: "scale / nativeScale", value: "\(fmt(screen.scale)) / \(fmt(screen.nativeScale))"))
-        report.fields.append(LabField(label: "界面方向", value: orientationText(scene.interfaceOrientation)))
+        // iOS 26 起 scene.interfaceOrientation 废弃，改从 effectiveGeometry 读
+        report.fields.append(
+            LabField(
+                label: "界面方向",
+                value: orientationText(scene.effectiveGeometry.interfaceOrientation)
+            )
+        )
 
         // 屏幕圆角：读不到就写"读不到"，它不影响主流程
         report.fields.append(
