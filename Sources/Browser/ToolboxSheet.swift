@@ -1,90 +1,88 @@
 import SwiftUI
 
-/// 手势唤出的工具箱。半透明浮层，用 sheet 的 detent 实现——
-/// 这样下拉关闭、跟手拖动这些都是系统给的，不用自己写。
+/// 手势唤出的工具箱。**原生 sheet**，不是自绘浮层。
+///
+/// 改掉的毛病：原来那版自己画圆角和毛玻璃，圆角半径和屏幕圆角对不齐，
+/// 而且只给了一个固定 detent——能往下拖走，往上拖没反应。
+///
+/// 现在是 `[.medium, .large]` 两档：
+/// - 半屏档在 iOS 26 下就是一张悬浮的玻璃卡片，圆角、边距、材质全是系统的；
+///   底下的网页还能继续点（`presentationBackgroundInteraction`）。
+/// - 内容本身是一个 `Form`，在半屏档滚到顶再往上拖就自然升到大档，
+///   下半截直接就是本站设置——不用再点一下"本站设置"跳新页面。
+///
+/// 刻意**不再**设 `presentationBackground` / `presentationCornerRadius`：
+/// 那两个是用来覆盖系统外观的，而现在想要的恰恰是系统外观。
 struct ToolboxSheet: View {
     let session: WebSession
     /// 临时站点（husk://open?url=）不写回配置，所以要知道能不能持久化
     let canPersist: Bool
-    let onCommitZoom: (Double) -> Void
-    let onOpenSiteSettings: () -> Void
     let onExitToLibrary: () -> Void
 
+    @Environment(SiteStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+
+    @State private var detent: PresentationDetent = .medium
     @State private var copied = false
 
     var body: some View {
-        VStack(spacing: 22) {
-            header
-            zoomSection
-            actionRow
-            urlRow
-            footerRow
+        Form {
+            headerSection
+            actionSection
+            urlSection
+            librarySection
+            if canPersist {
+                SiteSettingsSections(site: siteBinding, commit: { store.update(session.site) })
+            } else {
+                adHocSection
+            }
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 18)
-        .padding(.bottom, 12)
-        .presentationDetents([.height(408)])
+        .presentationDetents([.medium, .large], selection: $detent)
         .presentationDragIndicator(.visible)
-        .presentationBackground(.ultraThinMaterial)
-        .presentationCornerRadius(28)
+        // 半屏档下网页还能继续滚、继续点
+        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         .tint(Theme.accent)
     }
 
-    private var header: some View {
-        VStack(spacing: 3) {
-            Text(session.pageTitle?.isEmpty == false ? session.pageTitle! : session.site.name)
-                .font(.headline)
-                .lineLimit(1)
-            Text(session.site.displayHost)
-                .font(.caption)
-                .foregroundStyle(Theme.secondaryText)
-        }
-        .frame(maxWidth: .infinity)
+    /// 改动实时落到会话上（当前页面立刻跟着变），写盘交给 `commit`
+    private var siteBinding: Binding<Site> {
+        Binding(get: { session.site }, set: { session.site = $0 })
     }
 
-    // MARK: 缩放
+    // MARK: - 头部
 
-    private var zoomSection: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Label("缩放", systemImage: "textformat.size")
-                    .font(.subheadline.weight(.medium))
-                Spacer()
-                Text("\(Int((session.site.zoom * 100).rounded()))%")
-                    .font(.subheadline.monospacedDigit())
+    private var headerSection: some View {
+        Section {
+            VStack(spacing: 3) {
+                Text(session.pageTitle?.isEmpty == false ? session.pageTitle! : session.site.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(session.site.displayHost)
+                    .font(.caption)
                     .foregroundStyle(Theme.secondaryText)
             }
-            HStack(spacing: 12) {
-                Text("50%").font(.caption2).foregroundStyle(Theme.secondaryText)
-                Slider(
-                    value: Binding(
-                        get: { session.site.zoom },
-                        // 拖动时实时生效：直接写 pageZoom，不等松手
-                        set: { session.applyZoom($0) }
-                    ),
-                    in: Site.zoomRange,
-                    step: 0.05,
-                    onEditingChanged: { editing in
-                        // 松手才写回配置，免得拖一次滑块写几十遍盘
-                        if !editing { onCommitZoom(session.site.zoom) }
-                    }
-                )
-                Text("200%").font(.caption2).foregroundStyle(Theme.secondaryText)
-            }
+            .frame(maxWidth: .infinity)
+            .listRowBackground(Color.clear)
         }
-        .padding(14)
-        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    // MARK: 动作
+    // MARK: - 动作
 
-    private var actionRow: some View {
-        HStack(spacing: 10) {
-            toolButton("刷新", "arrow.clockwise") { session.reload(); dismiss() }
-            toolButton("站点首页", "house") { session.goHome(); dismiss() }
-            shareButton
-            toolButton("Safari", "safari") { session.openInSafari(); dismiss() }
+    private var actionSection: some View {
+        Section {
+            // 几块玻璃挨在一起要装进同一个容器里：玻璃不该去采样玻璃，
+            // 容器会把它们当成一整块来算折射。
+            GlassEffectContainer(spacing: 14) {
+                HStack(spacing: 10) {
+                    toolButton("刷新", "arrow.clockwise") { session.reload(); dismiss() }
+                    toolButton("站点首页", "house") { session.goHome(); dismiss() }
+                    shareButton
+                    toolButton("Safari", "safari") { session.openInSafari(); dismiss() }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
         }
     }
 
@@ -93,90 +91,76 @@ struct ToolboxSheet: View {
             Haptics.tap()
             action()
         } label: {
-            VStack(spacing: 7) {
-                Image(systemName: symbol)
-                    .font(.system(size: 19, weight: .medium))
-                    .frame(width: 50, height: 50)
-                    .background(Color.white.opacity(0.09), in: Circle())
-                Text(title).font(.caption2)
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(SpringyPressStyle())
-        .foregroundStyle(Theme.primaryText)
-    }
-
-    private var shareButton: some View {
-        ShareLink(item: session.shareURL) {
-            VStack(spacing: 7) {
-                Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: 19, weight: .medium))
-                    .frame(width: 50, height: 50)
-                    .background(Color.white.opacity(0.09), in: Circle())
-                Text("分享").font(.caption2)
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .foregroundStyle(Theme.primaryText)
-    }
-
-    // MARK: 当前地址
-
-    private var urlRow: some View {
-        Button {
-            session.copyCurrentURL()
-            Haptics.success()
-            withAnimation { copied = true }
-            Task {
-                try? await Task.sleep(for: .seconds(1.6))
-                withAnimation { copied = false }
-            }
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: copied ? "checkmark.circle.fill" : "link")
-                    .foregroundStyle(copied ? .green : Theme.secondaryText)
-                Text(copied ? "已复制" : session.shareURL.absoluteString)
-                    .font(.footnote)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .foregroundStyle(Theme.primaryText)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            toolLabel(title, symbol)
         }
         .buttonStyle(.plain)
     }
 
-    private var footerRow: some View {
-        HStack(spacing: 10) {
+    private var shareButton: some View {
+        ShareLink(item: session.shareURL) {
+            toolLabel("分享", "square.and.arrow.up")
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func toolLabel(_ title: String, _ symbol: String) -> some View {
+        VStack(spacing: 7) {
+            Image(systemName: symbol)
+                .font(.system(size: 19, weight: .medium))
+                .frame(width: 52, height: 52)
+                .glassEffect(.regular.interactive(), in: .circle)
+            Text(title)
+                .font(.caption2)
+        }
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+    }
+
+    // MARK: - 当前地址
+
+    private var urlSection: some View {
+        Section {
+            Button {
+                session.copyCurrentURL()
+                Haptics.success()
+                withAnimation { copied = true }
+                Task {
+                    try? await Task.sleep(for: .seconds(1.6))
+                    withAnimation { copied = false }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: copied ? "checkmark.circle.fill" : "link")
+                        .foregroundStyle(copied ? .green : Theme.secondaryText)
+                    Text(copied ? "已复制" : session.shareURL.absoluteString)
+                        .font(.footnote)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var librarySection: some View {
+        Section {
             Button {
                 dismiss()
                 onExitToLibrary()
             } label: {
                 Label("返回列表", systemImage: "square.grid.2x2")
-                    .font(.subheadline.weight(.medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
-            .buttonStyle(.plain)
-
-            Button {
-                dismiss()
-                onOpenSiteSettings()
-            } label: {
-                Label("本站设置", systemImage: "slider.horizontal.3")
-                    .font(.subheadline.weight(.medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Theme.accent.opacity(0.22), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .disabled(!canPersist)
-            .opacity(canPersist ? 1 : 0.4)
         }
-        .foregroundStyle(Theme.primaryText)
+    }
+
+    private var adHocSection: some View {
+        Section {
+            Label("临时站点，配置改不了也存不下", systemImage: "clock.arrow.circlepath")
+                .font(.footnote)
+                .foregroundStyle(Theme.secondaryText)
+        } footer: {
+            Text("从 husk://open?url= 打开的地址不在站点列表里。想长期用它，先在列表里加一个站点。")
+        }
     }
 }

@@ -4,8 +4,9 @@
 
 解决的是 Safari「添加到主屏幕」那套 PWA 的老问题：缩放改不了、UA 锁死、点个外链就被甩出 app、图标丑、所有站共用一份 cookie。
 
-- SwiftUI + `WKWebView`，最低 **iOS 18.0**
-- 无第三方依赖，Swift 6 语言模式
+- SwiftUI + `WKWebView`，最低 **iOS 26.0**
+- 外观只做 **Liquid Glass 一套**，代码里没有一处 `#available` 降级分支
+- 无第三方依赖（打包了一份 Public Suffix List 数据文件），Swift 6 语言模式
 - MIT License
 
 ---
@@ -27,8 +28,7 @@ open Husk.xcodeproj
 
 1. `project.yml` → `targets.Husk.settings.base.PRODUCT_BUNDLE_IDENTIFIER`，把 `org.example.husk` 换成你自己的。
 2. 同一处的 `DEVELOPMENT_TEAM` 填你的 Team ID；或者留空，生成工程后在 Xcode 的 Signing & Capabilities 里选。
-3. Bundle ID 换了之后，顺手把 `Sources/WebClip/WebClipBuilder.swift` 里 payload 标识的 `org.example.husk.*` 前缀也换掉——这些字符串决定描述文件在系统里的身份，和 app 对上更干净。
-4. URL scheme `husk` 写在 `Support/Info.plist` 的 `CFBundleURLTypes` 里。想换名字的话，`Sources/App/DeepLink.swift` 里的 `DeepLink.scheme` 要同步改。
+3. URL scheme `husk` 写在 `Support/Info.plist` 的 `CFBundleURLTypes` 里。想换名字的话，`Sources/App/DeepLink.swift` 里的 `DeepLink.scheme` 要同步改。
 
 个人开发者账号（免费）装上去，app 每 7 天过期一次，重新用 Xcode 装一下就行。
 
@@ -88,36 +88,73 @@ husk://open?url=<percent-encoded>     # 打开临时站点，不入列表
 
 首页长按任一站点 → 「复制 husk:// 链接」拿到第一种。第二种可以从快捷指令、备忘录之类的地方直接调起。
 
-冷启动不会先闪一下首页：`Sources/App/Router.swift` 里留了一小段挡板期，先铺一张和启动屏同色的底，等 deep link 落定（或者 140ms 内没有）再放首页出来。
+**进来的时候首页一帧都不会出现**，实现见下面「不闪首页是怎么做到的」。
+
+## 快捷指令（App Intents）
+
+「打开站点」是注册给快捷指令的动作，站点本身是一个 `AppEntity`：在快捷指令里加这个动作时，
+站点参数是一个**带名字和图标的下拉列表**，不用手打 UUID。
+
+除此之外 `AppShortcutsProvider` 会让**每个站点**在「快捷指令」app 的 Husk 分组里各占一条，
+装完就能直接跑，不用自己先攒一条快捷指令。站点增删改之后会调
+`updateAppShortcutParameters()` 刷新那份快照（`Sources/Storage/SiteStore.swift`）。
+
+Siri 短语（每条都必须带上 app 名，这是框架的硬性要求）：
+
+```
+在 Husk 里打开〈站点〉
+用 Husk 打开〈站点〉
+Open 〈站点〉 in Husk
+```
+
+想把某个站点放上主屏：在快捷指令里建一条「打开站点」→「添加到主屏幕」，
+图标选相册里那张（见下一节）。
 
 ---
 
-## Web Clip（主屏图标）
+## 主屏图标：存到相册，不再是 Web Clip
 
-站点设置 → 「导出 Web Clip」，或者全局设置 → 「导出全部站点的 Web Clip」，拿到 `.mobileconfig`。
+**移除了 `.mobileconfig` / Web Clip 那一整条路。** 实测下来它有两个绕不过去的毛病：
 
-**安装步骤：**
+- 指向 `husk://` 时，多任务切换器里会多出一张**空白网页壳**——那是 Web Clip 自己的
+  Safari 容器，点开 Husk 之后它还赖在那儿；
+- 改成 `FullScreen=false` 倒是不留壳了，代价是点图标先经过 Safari 弹一下再跳回来。
 
-1. 通过分享面板把文件存到「文件」，或者 AirDrop 到自己设备
-2. **用 Safari 打开这个文件**（这条最关键，从别的 app 打开经常没反应）
-3. 提示「此网站正尝试下载配置描述文件」→ 允许
-4. 设置 → 通用 → **VPN 与设备管理** → 已下载的描述文件 → 安装
-5. 会有一屏红字写着「未签名」「描述文件未签名」——**这是正常的**，我们没有 Apple 的企业签名证书，自己生成的描述文件都长这样
-6. 装完主屏上出现图标，点开直接进 Husk 的对应站点
+两条都不如快捷指令的「添加到主屏幕」干净，而后者只需要一张图。所以原来「导出 Web Clip」
+的位置换成了**「存储图标到相册」**：
 
-删除：设置 → 通用 → VPN 与设备管理 → 选中 → 移除描述文件。
+- 站点长按菜单 → 存储图标到相册
+- 站点设置 → 维护 → 存储图标到相册
+- 全局设置 → 图标 → 把全部站点图标存进相册
 
-> ⚠️ **一个必须知道的限制**：Apple 的官方文档明确写着 Web Clip 的 `URL` 字段**必须以 `http` 或 `https` 开头**。我们填的是 `husk://open?id=…`，属于文档不支持的用法。实测在不少 iOS 版本上能装能跳，但这是没有保证的行为。
->
-> 万一你的系统版本拒绝安装，`Sources/WebClip/WebClipBuilder.swift` 里的 `LinkTarget` 留了第二个选项 `.siteURL`，改成它就是规范内的写法——代价是点图标会进 Safari 而不是 Husk，等于退回 PWA。
+产出的是 **1024×1024、方形、不带圆角、不透明**的 PNG。不自己切圆角是因为系统会再切一遍，
+自己先切等于边上留一圈怪东西。
+
+底色一律铺首字母占位图那套渐变，再把站点图标等比铺满盖上去——很多 favicon 是透明 PNG，
+直接存会变成一块黑。源图小于 **256px** 时就不硬放了，直接按占位图风格重画一张：
+再小的图（32/64 的 favicon 很常见）放到 1024 就是一团糊。
+
+权限只申请 **`NSPhotoLibraryAddUsageDescription`（仅添加照片）**，
+不要完整相册读取权限——这个功能只需要往里放。站点设置里的「从相册选一张」走
+`PhotosPicker`，那是进程外选择器，本来就不需要任何权限。
 
 ---
 
 ## 功能一览
 
-**首页** — 深色底、大圆角图标网格、按压回弹、滚动时大标题收成窄栏、下拉唤出搜索（不常驻）。长按出菜单：编辑 / 移到最前 / 删除 / 复制 `husk://` 链接 / 导出 Web Clip。
+**首页（iOS 26 改版）** — 底部系统 TabView：
 
-**浏览界面** — 全屏 WebView，除页面外没有任何常驻 UI。顶部一条 2pt 进度条，加载完淡出。支持边缘滑动前进后退。
+| tab | 内容 |
+|---|---|
+| 站点 | 图标网格，`+` 在导航栏右上角 |
+| 设置 | 原来的全局设置弹窗，现在是平级的一个 tab |
+| 搜索 | `role: .search`，iOS 26 下单独一颗圆形按钮落在右边，点开整条 tab bar 变搜索框 |
+
+tab bar 上方有一条 **`tabViewBottomAccessory`**「继续上次」：上次打开的站点图标 + 名字，点一下直接回去。没有上次记录时这条整个不显示。
+
+站点长按出菜单：编辑 / 移到最前 / 复制 `husk://` 链接 / 存储图标到相册 / 删除。
+
+**浏览界面** — 全屏 WebView，除页面外没有任何常驻 UI。顶部一条 2pt 进度条，加载完淡出。支持边缘滑动前进后退。设置里可以开「浏览时隐藏状态栏」，把时间电池那条一起藏掉。
 
 **手势工具箱** — 四种唤出手势可逐个开关（默认开前两个）：
 
@@ -128,11 +165,132 @@ husk://open?url=<percent-encoded>     # 打开临时站点，不入列表
 | 三指点按 | 关 |
 | 双指长按 | 关 |
 
-刻意避开单指边缘滑（撞前进后退）和单指长按（撞选中文字、链接预览）。工具箱内容：缩放滑块（50%–200%，拖动实时生效、松手写回配置）、刷新 / 站点首页 / 分享 / 在 Safari 打开、当前 URL（点一下复制）、本站设置、返回列表。
+刻意避开单指边缘滑（撞前进后退）和单指长按（撞选中文字、链接预览）。
 
-**站点配置** — 图标（自动抓取 / 相册选图 / 首字母渐变）、缩放、UA（6 个预设 + 自填）、外链行为（站内 / Safari / 按域名，默认第三种）、存储 profile。
+工具箱现在是**原生 sheet**，两档 detent：
 
-**全局设置** — 手势开关、新建站点默认值、配置导入导出（JSON）、存储管理（按站点清 / 全部清 / 孤儿清理）。
+- **半屏档**是 iOS 26 的悬浮玻璃卡片（圆角、边距、材质全是系统的），底下的网页还能继续点、继续滚；
+- 往上拖到**大档**，下半截直接就是**本站设置**——缩放、UA、外链档位与例外、存储 profile，不用再点一下跳新页面。
+
+上半截固定是：刷新 / 站点首页 / 分享 / 在 Safari 打开、当前 URL（点一下复制）、返回列表。
+
+**站点配置** — 图标（自动抓取 / 相册选图 / 首字母渐变）、缩放 10%–200%、UA（6 个预设 + 自填）、外链行为与档位、手动例外名单、存储 profile。
+
+**全局设置** — 浏览时隐藏状态栏、手势开关、新建站点默认值、图标（Google 回退开关 / 批量存图标）、配置导入导出（JSON）、存储管理（按站点清 / 全部清 / 孤儿清理）。
+
+---
+
+## 不闪首页是怎么做到的
+
+原来的症状：从快捷指令用 `husk://open?id=…` 打开，总能看见约 0.3 秒首页再进网页；
+已经在站 A 时跳站 B，还会先退回首页再盖上去。三个原因叠在一起：
+
+1. `BrowserScreen` 是 `.fullScreenCover` 呈现的——模态本身就意味着"先有个底下的东西，再上滑盖住"，换站还得先 dismiss 再 present；
+2. 冷启动留了 140ms 挡板等 `onOpenURL`；
+3. 首页有 0.2s 淡入。
+
+现在三条都没了：
+
+**浏览界面改成根视图级的一层**（`Sources/App/HuskApp.swift` 的 `RootView`）。
+首页和浏览界面在同一个 `ZStack` 里，浏览界面直接盖在首页上；换站就是换一个 `id`，
+中间没有任何一帧属于别人。首页**留在层级里**而不是被 `if/else` 换掉，
+这样从站点退回来时 tab 选中项和滚动位置都还在。
+
+从首页点进去仍然有过渡动画（`withAnimation`）；deep link 和快捷指令那两条路
+走 `Transaction.disablesAnimations`，直接换。
+
+**冷启动的 URL 提前到第一帧之前拿**（`Sources/App/AppDelegate.swift`）：
+`application(_:configurationForConnecting:options:)` 比 `onOpenURL` 早得多——
+scene 都还没连上，`UIScene.ConnectionOptions.urlContexts` 里已经有这次启动带来的 URL 了。
+在那儿写进 `Router.shared`，`WindowGroup` 第一次求值时就已经是"正在浏览"的状态。
+140ms 挡板和首页淡入一起删掉了。
+
+因为这个，`Router` / `SiteStore` / `IconStore` 都改成了进程级单例：
+AppDelegate 和 App Intents 都够不着 SwiftUI 的 `@State`。
+
+**SwiftUI 之后还会把同一个 URL 再送一次给 `onOpenURL`**，两条路径都存在、
+谁先谁后不保证，所以 `Router` 记下冷启动那一条做去重。
+
+**快捷指令走的是 iOS 26 的 scene 派发**：`OpenSiteIntent` 带上
+`TargetContentProvidingIntent` 之后，系统会在把 app 端到前台**之前**先把 intent
+送给场景（`RootView` 的 `.onAppIntentExecution`），给我们一次在第一帧之前
+把根视图摆好的机会。这条路要求 Info.plist 里声明
+`UIApplicationSceneManifest.UIApplicationSupportsMultipleScenes = YES`，
+哪怕实际上只有一个窗口——Apple 文档明写了这一条。
+`perform()` 里还留了一次兜底调用：万一派发没发生，站点照样能打开，
+而重复调用本来就是空操作。
+
+### 打开的就是当前站点时，什么都不动
+
+三个入口（URL scheme、快捷指令、首页点击）最后都汇到 `Router.open`，
+它开头就一句 `guard !isShowing(...)`：目标就是当前显示的那个站点时**直接返回**——
+不重建会话、不重载、不回站点首页、不换 `id`。
+
+判断粒度：
+
+- **列表里的站点**按 `id` 判。地址、缩放、UA 之后改了都还是同一个站。
+- **临时站点**（`husk://open?url=`）按**去掉 fragment 的完整 URL** 判。
+  没有 id 可依；只按 host 又太粗——同一个站的两篇文章会被当成同一个目标，
+  表现就是"打开另一篇却什么都不发生"。fragment 不算，因为 `#anchor` 的差别
+  是页内跳转，为它重建整个会话没有道理。
+
+（顺带：原来 `ActiveSite` 的注释写着"临时站点每次都换 id，这样连着开两次同一个地址也会重建会话"——
+那条行为现在被明确推翻了。）
+
+---
+
+## 外链判断
+
+严格程度三档，只在外链策略是「按域名判断」时起作用：
+
+| 档位 | 含义 |
+|---|---|
+| 仅本主机 | 只有 `example.com` 自己算站内（`www.` 视为同一个） |
+| 本主机及子域 | 加上 `a.example.com`、`a.b.example.com` |
+| **同一可注册域**（默认） | 两边都归约到 eTLD+1 再比，`m.youtube.com` ↔ `www.youtube.com` 算同一站 |
+
+每个站点还有两份手动例外名单，**优先于档位**：
+
+- **也算站内** —— 自家短链、CDN、登录中心（`b23.tv`、`youtu.be`、`*.ytimg.com`）
+- **强制 Safari** —— 优先级最高，压得过一切，包括「站内加载」策略和登录流放行
+
+写法两种，含义**刻意不同**：`example.com` 只匹配这一个主机（`www.` 归一），
+`*.example.com` 连同它的任意层级子域一起。不把裸域名也当成"连子域一起"，
+是为了让通配符这个写法有意义。
+
+### Public Suffix List
+
+「同一可注册域」这一档以前靠一张手写的常见多段后缀表（`co.uk`、`com.cn` 之类），
+漏掉了 `github.io`、`vercel.app` 这种"托管型"公共后缀——`a.github.io` 和
+`b.github.io` 会被算成同一站。现在**打包了完整的 PSL**：
+
+- `Resources/public_suffix_list.dat`，官方列表去掉注释和空行（约 10000 条 / 145KB）
+- **ICANN 段和 PRIVATE 段都留着**：`github.io` 正在 PRIVATE 段里，丢掉它就白换了
+- 解析按 publicsuffix.org 的算法：例外规则（`!`）最优先，然后通配（`*.`），再取最长匹配
+- 惰性解析（`static let`），只在第一次判外链时发生
+
+数据文件带 VERSION 注释，更新时直接从 <https://publicsuffix.org/list/public_suffix_list.dat>
+重新拉一份、去掉注释行即可。
+
+---
+
+## 缩放：10%–200%
+
+下限从 50% 拉到 10%。**`WKWebView.pageZoom` 自己不做任何钳位**——
+setter 一路直通 `WebPageProxy::setPageZoomFactor` → `LocalFrame::setPageAndTextZoomFactors`，
+中间没有 clamp（对着 WebKit 源码确认过）。所以范围完全由 app 说了算；
+下限留着是因为 0 会把缩放换算里的除法搞炸。
+
+线性滑块在这个范围里不好使：10%–100% 要占掉滑轨的 47%，而日常真正会调的
+90%–125% 挤在中间几个像素里，想停在 100% 基本靠运气。所以**滑块绑的是一张档位表的下标**
+（`Sources/Models/ZoomScale.swift`）：
+
+```
+10 15 20 25 33 40 50 60 67 75 80 90 │ 100 │ 110 125 140 150 175 200  (%)
+```
+
+低段跨度大、常用段跨度小，每一格都是个能说出口的数，而且一定停得到 100%。
+旁边还有个「重置」直接回 100%。表外的老配置值（比如 0.85）会落到最近的一格上。
 
 ---
 
@@ -140,16 +298,18 @@ husk://open?url=<percent-encoded>     # 打开临时站点，不入列表
 
 ```
 Sources/
-  App/          入口、路由、husk:// 解析
-  Models/       Site / AppSettings / UA 预设（纯值类型，Sendable）
+  App/          入口、根视图、AppDelegate（冷启动 URL）、路由、husk:// 解析
+  Models/       Site / AppSettings / UA 预设 / 外链档位 / PSL / 缩放档位表
   Storage/      JSON 持久化、WKWebsiteDataStore 多 profile 管理
-  Icons/        图标抓取、ICO 拆包、首字母占位图
+  Icons/        图标抓取、ICO 拆包、首字母占位图、主屏图标导出、存相册
+  Intents/      AppEntity、「打开站点」intent、AppShortcutsProvider
   WebKitLayer/  WKWebView 装配、导航策略、弹窗、手势
-  Browser/      浏览界面、进度条、工具箱
-  Home/         首页网格
-  SettingsUI/   站点设置、全局设置、存储管理
-  WebClip/      .mobileconfig 生成
-  Util/         主题、分享面板
+  Browser/      浏览界面、进度条、工具箱 sheet
+  Home/         TabView、站点网格、"继续上次"
+  SettingsUI/   站点设置、共用的本站设置分区、全局设置、存储管理
+  Util/         主题、玻璃提示条、分享面板
+Resources/
+  public_suffix_list.dat
 ```
 
 单文件都在 300 行以内。所有踩过的坑在代码里都有注释写明原因，别顺手"优化"掉。
@@ -179,42 +339,47 @@ Sources/
 | `createWebViewWith` 必须用 WebKit 递来的 configuration，否则 `window.opener` 变 null | `WebKitLayer/WebCoordinator+UI.swift` |
 | 那个 configuration 没走初始化路径，user script / message handler 要重挂 | `WebKitLayer/WebViewFactory.swift` |
 | `pageZoom` 要在 `didFinish` 之后设，太早会被导航重置 | 同上 |
-| `customUserAgent` 改完要 `reload()` 才对当前页生效 | `WebKitLayer/WebSession.swift` |
-| 深色白闪：`isOpaque = false` + 深色 `backgroundColor` | 同上 |
+| `customUserAgent` 改完要 `reload()` 才对当前页生效 | `WebKitLayer/BrowserWebView.swift` |
+| 深色白闪：`isOpaque = false` + 深色 `backgroundColor` | `WebKitLayer/WebViewFactory.swift` |
+| **`pageZoom` 的 setter 一路不做钳位**，直通 `WebPageProxy::setPageZoomFactor` → `LocalFrame::setPageAndTextZoomFactors`，范围由 app 自己定 | `Models/Site.swift` |
 | **delegate 要用 async 变体**：iOS 18 起 WebKit 给 completion handler 加了 `@MainActor`，旧签名只"近似匹配"，编译器仅给 warning 而运行时**根本不调用** | `WebKitLayer/WebCoordinator.swift` |
 
-另外补了两个文档里不显眼的：
+另外补了几个文档里不显眼的：
 
 - **`UIImage` 在 iOS 上不解码 `.ico`**，直接给 nil。`Icons/ICOUnpacker.swift` 从 `favicon.ico` 里把内嵌的 PNG 子图拆出来（现代站点基本都是 PNG-in-ICO）。
 - **首字母占位图的颜色不能用 `hashValue` 派生**，Swift 的字符串哈希每次启动换 seed，同一个站点每次启动都会换颜色。改用自己写的稳定累加。
+- **`tabViewBottomAccessory` 的内容不能在"有"和"没有"之间跳**——切个 tab 回来就撞
+  `_bottomAccessory.displayStyle` 的断言崩溃（FB18479195）。没有"上次记录"时
+  **连 modifier 一起不加**，见 `Home/HomeTabs.swift`。分支之间换内容（`.expanded` ↔ `.inline`
+  两种摆法）是安全的，空 ↔ 非空不是。
+- **App Intents 要派发给场景，得声明 `UIApplicationSupportsMultipleScenes = YES`**，
+  哪怕 app 只有一个窗口。Apple 文档里这条写在正文的 Important 框里，很容易漏。
 
 ---
 
 ## 相对于需求描述，我改了/补了这些
 
-1. **Web Clip 的 `husk://` 是文档外用法** —— 见上面那段警告，留了 `.siteURL` 兜底选项。这是整个项目里唯一一处"照做但不保证"的地方，所以单独拎出来说。
+1. **「回首页」拆成两个按钮** —— 原描述里这个词有歧义：是回站点的首页，还是回 Husk 的站点列表？工具箱里两个都给了，叫「站点首页」和「返回列表」。
 
-2. **「回首页」拆成两个按钮** —— 原描述里这个词有歧义：是回站点的首页，还是回 Husk 的站点列表？工具箱里两个都给了，叫「站点首页」和「返回列表」。
+2. **底边上滑没用 `UIScreenEdgePanGestureRecognizer(.bottom)`** —— 屏幕底边被系统的主屏指示器占着，边缘 pan 要靠 `preferredScreenEdgesDeferringSystemGestures` 去抢，体验是"得划两次"。改成 `UISwipeGestureRecognizer(.up)` + 起手位置限定在底部 32pt，判定快、失败也快，不会把页面滚动卡住。
 
-3. **底边上滑没用 `UIScreenEdgePanGestureRecognizer(.bottom)`** —— 屏幕底边被系统的主屏指示器占着，边缘 pan 要靠 `preferredScreenEdgesDeferringSystemGestures` 去抢，体验是"得划两次"。改成 `UISwipeGestureRecognizer(.up)` + 起手位置限定在底部 32pt，判定快、失败也快，不会把页面滚动卡住。
+3. **加了个逃生按钮** —— 四个手势全关掉的话就没法唤出工具箱，等于被困在站点里出不去了。这种情况下浏览页右下角会出现一个不起眼的小圆点。
 
-4. **加了个逃生按钮** —— 四个手势全关掉的话就没法唤出工具箱，等于被困在站点里出不去了。这种情况下浏览页右下角会出现一个不起眼的小圆点。
+4. **实现了 JS 的 `alert` / `confirm` / `prompt`** —— 不实现这三个 `WKUIDelegate` 方法的话，这些调用在 WKWebView 里是"什么都不发生"，而且 `confirm` 永远返回 false。对一个当 app 用的容器来说这是明显的功能缺失。
 
-5. **实现了 JS 的 `alert` / `confirm` / `prompt`** —— 不实现这三个 `WKUIDelegate` 方法的话，这些调用在 WKWebView 里是"什么都不发生"，而且 `confirm` 永远返回 false。对一个当 app 用的容器来说这是明显的功能缺失。
+5. **注入了一个极小的 user script** —— 把页面根元素的背景色报回来，用它刷 WebView 的 `backgroundColor`，这样过度滚动露出来的那条边和页面同色。顺带它也是"弹窗要重挂 configuration 层面的东西"这件事的具体例子，不然那段注释是空的。
 
-6. **注入了一个极小的 user script** —— 把页面根元素的背景色报回来，用它刷 WebView 的 `backgroundColor`，这样过度滚动露出来的那条边和页面同色。顺带它也是"弹窗要重挂 configuration 层面的东西"这件事的具体例子，不然那段注释是空的。
+6. **Google favicon 回退做成了开关** —— 它会把你的域名告诉 Google。默认开着（抓取成功率明显更高），设置里能关。
 
-7. **Google favicon 回退做成了开关** —— 它会把你的域名告诉 Google。默认开着（抓取成功率明显更高），设置里能关。
+7. **删除站点时分两个选项** —— 「删除站点」只从列表移除，「删除并清除存储」连 cookie 一起清。分开是因为误删之后重新加回来还能保住登录状态。留下来的数据之后能在存储管理里当孤儿清掉。
 
-8. **删除站点时分两个选项** —— 「删除站点」只从列表移除，「删除并清除存储」连 cookie 一起清。分开是因为误删之后重新加回来还能保住登录状态。留下来的数据之后能在存储管理里当孤儿清掉。
+8. **导入冲突给了三个选择** —— 覆盖 / 都留着（新建副本）/ 跳过。建副本时会把 profile 也跟着换成新 id，否则副本和原站会共享存储，属于没人想要的结果。
 
-9. **导入冲突给了三个选择** —— 覆盖 / 都留着（新建副本）/ 跳过。建副本时会把 profile 也跟着换成新 id，否则副本和原站会共享存储，属于没人想要的结果。
+9. **整个 app 锁深色** —— 首页本来就是深色设计，锁死顺带让 WKWebView 的 `prefers-color-scheme` 跟着走深色。不想要的话删掉 `Info.plist` 里的 `UIUserInterfaceStyle` 和 `HuskApp.swift` 里的 `.preferredColorScheme(.dark)`。
 
-10. **整个 app 锁深色** —— 首页本来就是深色设计，锁死顺带让 WKWebView 的 `prefers-color-scheme` 跟着走深色。不想要的话删掉 `Info.plist` 里的 `UIUserInterfaceStyle` 和 `HuskApp.swift` 里的 `.preferredColorScheme(.dark)`。
+10. **ATS 只放开了 WebView 内的明文 HTTP** —— `NSAllowsArbitraryLoadsInWebContent`。这样 `http://` 的站点能正常打开，而 app 自己发起的请求（图标抓取）仍然强制 HTTPS。
 
-11. **ATS 只放开了 WebView 内的明文 HTTP** —— `NSAllowsArbitraryLoadsInWebContent`。这样 `http://` 的站点能正常打开，而 app 自己发起的请求（图标抓取）仍然强制 HTTPS。
-
-12. **没做拖拽排序** —— LazyVGrid 里的拖拽重排要手写命中测试和插入指示，在这个没有编译器验证的环境里做完全靠脑补，风险和收益不成比例。用长按菜单里的「移到最前」代替了。
+11. **没做拖拽排序** —— LazyVGrid 里的拖拽重排要手写命中测试和插入指示，在这个没有编译器验证的环境里做完全靠脑补，风险和收益不成比例。用长按菜单里的「移到最前」代替了。
 
 ### 第二轮：代码评审揪出的三个问题
 
@@ -275,16 +440,75 @@ scheme 一律返回 false，那张表上限 50 条还得预先知道要查哪些
 
 ---
 
+### 第三轮：iOS 26 改版里我自己拿的主意
+
+需求给的是方向，这些是落地时的判断，挑不显而易见的记一下。
+
+**a. 自绘按钮只剩一处。** 「凡是自己画的面板、按钮、卡片，能用系统组件就换系统组件」
+这条执行下来，`Color.white.opacity(0.08)` 那套毛玻璃全没了：
+面板换成 `Form`/`Section`，按钮换成 `.buttonStyle(.glass)` / `.glassProminent`，
+提示条换成 `glassEffect(.regular, in: .capsule)`，空状态换成 `ContentUnavailableView`，
+工具箱那排圆形按钮装进 `GlassEffectContainer`（玻璃不该去采样玻璃）。
+`Theme` 从一整套颜色缩到三个。
+
+唯一留下来的是**站点图标的按压回弹**（`Home/SiteTile.swift`）：
+图标是一张铺满的图片，系统按钮样式都会在它周围画自己的背景，
+看着就不是"主屏图标"了。这一处保留，代码里也写了原因。
+
+**b. 工具箱 sheet 里没有 `NavigationStack`。** 半屏档要的是 iOS 26 那张悬浮玻璃卡片，
+套一层导航栈会多出自己的背景和标题栏，把卡片的观感冲掉。
+站点名和域名直接做成第一个 section 的内容。
+
+**c. 「本站设置」抽成了共用分区**（`SettingsUI/SiteSettingsSections.swift`）。
+工具箱大档位和站点编辑页要显示同一批设置，各写一份的话加个字段就得改两处。
+两边的写盘时机不同，所以约定成：改 `site` 是即时的（当前页面立刻跟着变），
+写盘统一走 `commit` 回调——编辑页传空操作（保存时才落盘），工具箱传 `store.update`。
+缩放滑块拖动时只写 `site`，松手才 `commit`。
+
+顺带一个 SwiftUI 的坑：`.onChange` 挂在 `Group` 上会分发给**每个**子视图，
+一次改动会 commit 五遍。所以它只挂在其中一个 section 上。
+
+**d. `+` 从网格里挪走了，`AddSiteTile` 删掉。** 需求说 `+` 放右上角导航栏，
+那网格末尾那块虚线框就重复了。空状态里还留了一个「添加第一个站点」。
+
+**e. 手动例外的通配语义是我定的。** `example.com` 只匹配这一个主机，
+`*.example.com` 才连子域一起——如果裸域名也默认带子域，那通配符这个写法就没意义了。
+用户手误写成 `.example.com` 的按通配处理。
+
+**f. 缩放没用对数滑块，用了档位表。** 对数映射确实能解决低段过密，
+但滑块会停在 37%、113% 这种数上，反而更难用。档位表每格都是个能说出口的数，
+而且一定停得到 100%。
+
+**g. 存相册的图标在源图小于 256px 时重画。** 不是"任何放大都重画"：
+256 → 1024 是 4 倍，但系统显示时会缩回 180pt 左右，等价于 256 → 540，肉眼基本看不出。
+再小的（32/64 的 favicon 很常见）才是真糊。
+
+**h. 域名例外的输入框逐字写盘。** 库文件只有几 KB、原子写，
+和原来那个全局默认缩放滑块（每一步都落盘）是一个量级，没为它单独做防抖。
+
+**i. 临时站点的比对粒度选了"去掉 fragment 的完整 URL"**，理由写在上面
+「打开的就是当前站点时」那一节。
+
+**j. `UIApplicationSupportsMultipleScenes` 是被迫开的**，副作用是 iPad 上能多开窗口。
+所有窗口共用同一个 `Router`，内容是一样的。不想要这个副作用的话，
+去掉 Info.plist 里的 `UIApplicationSceneManifest` 和 `OpenSiteIntent` 的
+`TargetContentProvidingIntent` 即可——代价是快捷指令冷启动会闪一下首页，
+`perform()` 那条兜底路径照样能把站点打开。
+
+---
+
 ## 已知限制
 
-- **`.sameDomain` 的域名判断是 eTLD+1 近似，没接 Public Suffix List。** 内置了一张常见多段后缀表（`co.uk`、`com.cn` 之类），但像 `github.io` 这种"托管型"公共后缀没覆盖，`a.github.io` 和 `b.github.io` 会被算成同一站。对"链接在哪儿打开"这件事无所谓，别当安全边界用。
+- **PSL 是打包的快照，不会自己更新。** 新注册的公共后缀要等下一次更新数据文件。判错的那个域名，用站点设置里的手动例外名单直接压过去就行。
+- **PSL 里的国际化域名是 Unicode 形式，而 `URL.host()` 给的是 Punycode**，两边对不上时那个 IDN 站点会退回"最后一段是公共后缀"。中文域名之类的站点如果判得不对，同样用手动例外压。
 - **`.ico` 里只装老式 BMP 子图的站点抓不到图标**，会往下退到 Google 服务或首字母图。写个 BMP 解码器不值当。
 - **`http://` 站点的图标抓不到** —— ATS 只对 WebView 内容放开了明文，app 侧的 URLSession 还是强制 HTTPS。这是有意的取舍。
 - **`pageZoom` 是整页缩放**，等价于 CSS `zoom`。用固定像素布局的站点放大后可能出横向滚动条，这是这个 API 的性质，不是 bug。
 - **存储占用只报"有几个域名留了数据"，不报字节数** —— `WKWebsiteDataRecord` 根本不提供大小。
 - **临时站点（`husk://open?url=`）共用一个 profile**，彼此之间不隔离。
-- **描述文件未签名**，安装时必然有红字警告。
-- **没做 iPad 多窗口**（Scene 多实例）。
+- **iPad 上现在能开多个窗口了**，但那不是设计意图：`UIApplicationSupportsMultipleScenes` 是 App Intents 的 scene 派发要求的（见上文）。所有窗口共用同一个 `Router`，所以多开出来的窗口内容是一样的。
+- **`ScrollView` 里的空状态不是垂直居中的**，`ContentUnavailableView` 顶着上边留了一段内边距。
+- **外链判断不是安全边界**，只决定"这个链接在哪儿打开"。
 
 ## 明确不做
 

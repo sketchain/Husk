@@ -1,3 +1,4 @@
+import AppIntents
 import Foundation
 import Observation
 
@@ -8,6 +9,10 @@ import Observation
 @MainActor
 @Observable
 final class SiteStore {
+    /// 单例。`AppDelegate` 要在第一帧之前按 id 解析 deep link，那会儿还没有任何
+    /// SwiftUI 视图可以挂 `@State`，所以真相来源得是进程级的。
+    static let shared = SiteStore()
+
     private(set) var sites: [Site] = []
     var settings: AppSettings = AppSettings() {
         didSet { if settings != oldValue && !isLoading { save() } }
@@ -19,7 +24,7 @@ final class SiteStore {
     /// 最近一次写盘失败的原因，UI 里提示用
     private(set) var lastError: String?
 
-    init() {
+    private init() {
         load()
     }
 
@@ -72,18 +77,31 @@ final class SiteStore {
     func add(_ site: Site) {
         sites.append(site)
         save()
+        refreshShortcuts()
+    }
+
+    /// 站点列表变了就把 App Shortcut 的参数快照刷一遍。
+    ///
+    /// 参数化的 App Shortcut（"打开〈站点〉"）会按 `SiteEntityQuery.suggestedEntities()`
+    /// 在「快捷指令」app 的 Husk 分组里逐个展开。不调这一下的话，那份列表会停在
+    /// 上一次刷新时的样子——新加的站点不出现，删掉的还赖着。
+    private func refreshShortcuts() {
+        HuskShortcuts.updateAppShortcutParameters()
     }
 
     func update(_ site: Site) {
         guard let index = sites.firstIndex(where: { $0.id == site.id }) else { return }
         sites[index] = site
         save()
+        refreshShortcuts()
     }
 
     func delete(id: UUID) {
         sites.removeAll { $0.id == id }
         AppPaths.removeIcons(for: id)
+        if settings.lastOpenedSiteID == id { settings.lastOpenedSiteID = nil }
         save()
+        refreshShortcuts()
     }
 
     func moveToFront(id: UUID) {
@@ -91,6 +109,19 @@ final class SiteStore {
         let site = sites.remove(at: index)
         sites.insert(site, at: 0)
         save()
+    }
+
+    /// 记下"上次打开的站点"，首页底部的"继续上次"读它。
+    /// 值没变就不写盘——同一个站点连开几次不该反复落盘。
+    func rememberLastOpened(_ id: UUID) {
+        guard settings.lastOpenedSiteID != id else { return }
+        settings.lastOpenedSiteID = id   // didSet 会负责写盘
+    }
+
+    /// "继续上次"要显示的那个站点。站点被删掉之后这里自然就是 nil。
+    var lastOpenedSite: Site? {
+        guard let id = settings.lastOpenedSiteID else { return nil }
+        return site(id: id)
     }
 
     /// 当前所有在用的 profile 名，孤儿清理要拿它当白名单。
@@ -178,6 +209,7 @@ final class SiteStore {
         }
         if includeSettings { settings = library.settings }
         save()
+        refreshShortcuts()
         return result
     }
 }

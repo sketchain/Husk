@@ -1,53 +1,128 @@
 import Observation
 import SwiftUI
 
-/// 当前打开的站点。临时站点每次都换 id，这样连着开两次同一个地址也会重建会话。
-struct ActiveSite: Identifiable {
-    let id = UUID()
+/// 当前正在显示的站点。
+struct ActiveSite: Identifiable, Equatable {
+    /// 换一个 id 就等于"重建会话"。**同一个目标重复打开时刻意不换**，
+    /// 见 `Router.isShowing(_:canPersist:)`。
+    let id: UUID
     let site: Site
     /// 列表里的站点才能写回配置
     let canPersist: Bool
+
+    init(site: Site, canPersist: Bool) {
+        self.id = UUID()
+        self.site = site
+        self.canPersist = canPersist
+    }
+
+    static func == (lhs: ActiveSite, rhs: ActiveSite) -> Bool { lhs.id == rhs.id }
 }
 
+/// 根视图层面的"现在在看哪儿"。
+///
+/// 做成单例而不是 `@State`，是为了让**第一帧之前**就能写进来：
+/// `AppDelegate.application(_:configurationForConnecting:options:)` 里拿到冷启动的
+/// `husk://` 之后要立刻落库，那会儿 SwiftUI 的 `WindowGroup` 还没开始求值。
 @MainActor
 @Observable
 final class Router {
-    var active: ActiveSite?
+    static let shared = Router()
 
-    /// 冷启动阶段：为 true 之前首页不渲染。
+    /// nil = 在首页
+    private(set) var active: ActiveSite?
+
+    /// 冷启动时从 `options.urlContexts` 取走的那个 URL。
     ///
-    /// 为的是 `husk://` 冷启动时**不要先闪一下首页**。SwiftUI 的 `.onOpenURL` 是在
-    /// 第一帧之后才送到的，直接渲染首页就会看到"首页闪一下再盖上站点"。
-    /// 这里先铺一张和启动屏同色的底，等 URL 落定（或者 140ms 内没有 URL）再放首页出来。
-    private(set) var launchResolved = false
+    /// SwiftUI 之后**还会**把同一个 URL 再送一次给 `onOpenURL`——两条路径都存在，
+    /// 谁先谁后不保证。记下来去重，免得同一次冷启动把会话建两遍。
+    private var consumedLaunchURL: URL?
 
-    /// 启动时给 deep link 留的那点窗口期
-    func settleLaunch() async {
-        guard !launchResolved else { return }
-        try? await Task.sleep(for: .milliseconds(140))
-        launchResolved = true
+    private init() {}
+
+    // MARK: - 打开
+
+    /// 目标就是当前正在显示的那个站点吗？
+    ///
+    /// - 列表里的站点按 **id** 判：地址、缩放、UA 之后改了都还是同一个站。
+    /// - 临时站点（`husk://open?url=`）按**去掉 fragment 的完整 URL** 判：
+    ///   没有 id 可依，host 又太粗（同一个站的两个页面会被当成同一个目标，
+    ///   结果是"打开另一篇文章却什么都不发生"）。fragment 不算，因为 `#anchor`
+    ///   的差别是页内跳转，为它重建整个会话没有道理。
+    func isShowing(_ site: Site, canPersist: Bool) -> Bool {
+        guard let active, active.canPersist == canPersist else { return false }
+        if canPersist { return active.site.id == site.id }
+        return Router.adHocKey(active.site.url) == Router.adHocKey(site.url)
     }
 
-    func handle(_ url: URL, store: SiteStore) {
-        defer { launchResolved = true }
-        guard let target = DeepLink.parse(url) else { return }
-        switch target {
-        case .site(let id):
-            guard let site = store.site(id: id) else { return }
-            active = ActiveSite(site: site, canPersist: true)
-        case .adHoc(let target):
-            active = ActiveSite(
-                site: Site.adHoc(url: target, defaults: store.settings.newSiteDefaults),
-                canPersist: false
-            )
+    static func adHocKey(_ url: URL) -> String {
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.fragment = nil
+        components?.scheme = components?.scheme?.lowercased()
+        components?.host = components?.host?.lowercased()
+        return components?.url?.absoluteString ?? url.absoluteString
+    }
+
+    /// 打开一个站点。目标就是当前这个的话**什么都不做**——
+    /// 不重建会话、不重载、不回站点首页。
+    ///
+    /// `animated`：从首页点进去时留过渡动画；deep link / 快捷指令进来时直接换，
+    /// 中间不能有任何一帧是别的东西。
+    func open(_ site: Site, canPersist: Bool, animated: Bool) {
+        guard !isShowing(site, canPersist: canPersist) else { return }
+        let next = ActiveSite(site: site, canPersist: canPersist)
+        if animated {
+            withAnimation(.snappy(duration: 0.3)) { active = next }
+        } else {
+            // 站 A 跳站 B 也走这里：直接替换，不经过"先 dismiss 再 present"
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { active = next }
         }
     }
 
-    func open(_ site: Site) {
-        active = ActiveSite(site: site, canPersist: true)
+    /// 按 id 打开列表里的站点。找不到就当没这回事（站点可能已经被删了）。
+    @discardableResult
+    func open(siteID: UUID, store: SiteStore, animated: Bool) -> Bool {
+        guard let site = store.site(id: siteID) else { return false }
+        open(site, canPersist: true, animated: animated)
+        store.rememberLastOpened(site.id)
+        return true
     }
 
     func close() {
-        active = nil
+        withAnimation(.snappy(duration: 0.3)) { active = nil }
+    }
+
+    // MARK: - husk://
+
+    /// 冷启动路径：在第一帧之前把目标定下来。
+    func handleLaunchURL(_ url: URL, store: SiteStore) {
+        consumedLaunchURL = url
+        handle(url, store: store, animated: false)
+    }
+
+    /// `onOpenURL` 路径。冷启动那一条已经处理过了就跳过。
+    func handleOpenURL(_ url: URL, store: SiteStore) {
+        if let consumedLaunchURL, consumedLaunchURL == url {
+            self.consumedLaunchURL = nil
+            return
+        }
+        consumedLaunchURL = nil
+        handle(url, store: store, animated: false)
+    }
+
+    private func handle(_ url: URL, store: SiteStore, animated: Bool) {
+        guard let target = DeepLink.parse(url) else { return }
+        switch target {
+        case .site(let id):
+            open(siteID: id, store: store, animated: animated)
+        case .adHoc(let target):
+            open(
+                Site.adHoc(url: target, defaults: store.settings.newSiteDefaults),
+                canPersist: false,
+                animated: animated
+            )
+        }
     }
 }

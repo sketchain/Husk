@@ -14,12 +14,23 @@ struct Site: Identifiable, Codable, Hashable, Sendable {
     /// nil = 系统默认 UA
     var userAgent: String?
     var externalLinkPolicy: ExternalLinkPolicy
+    /// `.sameDomain` 策略下"站内"的判定档位
+    var linkScope: LinkScopeStrictness
+    /// 手动例外：命中就算站内，优先于档位。支持 `*.example.com`
+    var inAppDomains: [String]
+    /// 手动例外：命中就强制交给 Safari，优先级最高
+    var safariDomains: [String]
     /// 存储隔离标识。默认等于 id.uuidString（完全隔离）；两个站点填同一个字符串即共享 cookie/localStorage。
     var profile: String
     var iconSource: IconSource
     var createdAt: Date
 
-    static let zoomRange: ClosedRange<Double> = 0.5...2.0
+    /// 下限 10%：给"整页塞进一屏看个大概"留出余地。
+    /// `WKWebView.pageZoom` 自己**不做任何钳位**（setter 一路直通
+    /// `WebPageProxy::setPageZoomFactor` → `LocalFrame::setPageAndTextZoomFactors`，
+    /// 中间没有 clamp），所以范围完全由我们说了算；不设下限的话 0 会把
+    /// 缩放换算里的除法搞炸，该有的保护还是得留在这边。
+    static let zoomRange: ClosedRange<Double> = 0.1...2.0
 
     init(
         id: UUID = UUID(),
@@ -28,6 +39,9 @@ struct Site: Identifiable, Codable, Hashable, Sendable {
         zoom: Double = 1.0,
         userAgent: String? = nil,
         externalLinkPolicy: ExternalLinkPolicy = .sameDomain,
+        linkScope: LinkScopeStrictness = .registrableDomain,
+        inAppDomains: [String] = [],
+        safariDomains: [String] = [],
         profile: String? = nil,
         iconSource: IconSource = .automatic,
         createdAt: Date = Date()
@@ -38,12 +52,15 @@ struct Site: Identifiable, Codable, Hashable, Sendable {
         self.zoom = zoom.clamped(to: Site.zoomRange)
         self.userAgent = userAgent
         self.externalLinkPolicy = externalLinkPolicy
+        self.linkScope = linkScope
+        self.inAppDomains = inAppDomains
+        self.safariDomains = safariDomains
         self.profile = profile ?? id.uuidString
         self.iconSource = iconSource
         self.createdAt = createdAt
     }
 
-    /// 站点主域（去掉 www.），用于 `.sameDomain` 判断和图标抓取
+    /// 站点主域（去掉 www.），用于站内判断和图标抓取
     var host: String { Site.normalizedHost(of: url) ?? "" }
 
     var displayHost: String { url.host() ?? url.absoluteString }
@@ -61,45 +78,63 @@ struct Site: Identifiable, Codable, Hashable, Sendable {
         return host.isEmpty ? nil : host
     }
 
-    /// 判断 `candidate` 是否和本站属于同一个可注册域。
+    // MARK: - 站内 / 外链
+
+    /// 判断 `candidate` 算不算"站内"，按本站选的档位。
     ///
-    /// 早先这里是纯后缀匹配（`other == base || other.hasSuffix("." + base)`），有个很实际的毛病：
-    /// 站点地址填的是 `m.youtube.com` 时，点到 `youtube.com` 或 `www.youtube.com` 会被判成外站甩给
-    /// Safari。只要站点配的是某个子域，它自己的主域和兄弟子域就全成了"外链"。
-    /// 改成两边都先归约到"可注册域"（eTLD+1 的近似）再比。
-    ///
-    /// 仍然**不是** Public Suffix List：只内置了一张常见多段后缀表。代价是
-    /// `a.github.io` 和 `b.github.io` 会被算成同一站。对"决定这个链接在哪儿打开"
-    /// 这件事无所谓，但别把它当安全边界用。
+    /// 三档的差别只在这一个函数里，手动例外不在这儿处理——
+    /// 例外要压过档位，所以放在 `externalLinkDecision(for:)` 的最前面。
     func isSameSite(_ candidate: URL) -> Bool {
         guard let base = Site.normalizedHost(of: url),
               let other = Site.normalizedHost(of: candidate) else { return false }
-        if other == base || other.hasSuffix("." + base) || base.hasSuffix("." + other) { return true }
-        return Site.registrableDomain(base) == Site.registrableDomain(other)
-    }
 
-    /// 取可注册域：`m.youtube.com` → `youtube.com`，`shop.example.co.uk` → `example.co.uk`
-    static func registrableDomain(_ host: String) -> String {
-        let parts = host.split(separator: ".")
-        guard parts.count > 2 else { return host }
-        let lastTwo = parts.suffix(2).joined(separator: ".")
-        // 末两段本身就是公共后缀的话，得再往前吃一段才是真正的可注册域
-        if multiLabelSuffixes.contains(lastTwo) {
-            return parts.suffix(3).joined(separator: ".")
+        switch linkScope {
+        case .host:
+            // normalizedHost 已经削掉了 www.，所以 www.example.com 和 example.com 在这儿是同一个
+            return other == base
+        case .hostAndSubdomains:
+            return other == base || other.hasSuffix("." + base)
+        case .registrableDomain:
+            if other == base { return true }
+            // 两边都归约到 eTLD+1 再比。站点地址填的是 m.youtube.com 时，
+            // 点到 youtube.com / www.youtube.com 不该被当成外站。
+            guard let baseDomain = PublicSuffixList.registrableDomain(of: base),
+                  let otherDomain = PublicSuffixList.registrableDomain(of: other)
+            else { return false }
+            return baseDomain == otherDomain
         }
-        return lastTwo
     }
 
-    /// 常见的多段公共后缀。完整的 PSL 有上万条还要定期更新，这里只覆盖高频的。
-    private static let multiLabelSuffixes: Set<String> = [
-        "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk",
-        "co.jp", "ne.jp", "or.jp", "ac.jp",
-        "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn",
-        "com.hk", "com.tw", "com.sg", "com.my", "co.id", "co.th",
-        "com.au", "net.au", "org.au", "co.nz",
-        "com.br", "com.mx", "com.ar", "com.tr", "co.za",
-        "co.kr", "or.kr", "co.in", "co.il",
-    ]
+    /// 一次导航该往哪儿去
+    enum LinkDestination: Equatable, Sendable {
+        case inApp
+        case safari
+    }
+
+    /// 外链决策的唯一入口。顺序是刻意的：
+    /// 1. **强制 Safari 名单**——用户写死的，压过一切，包括 `.inApp` 策略
+    /// 2. **也算站内名单**——自家短链（`b23.tv`、`youtu.be`）、CDN、登录中心
+    /// 3. 站点策略；`.sameDomain` 下再看档位和登录流放行
+    func destination(for url: URL) -> LinkDestination {
+        guard url.scheme == "http" || url.scheme == "https" else { return .inApp }
+        let host = Site.normalizedHost(of: url) ?? ""
+
+        if DomainPattern.matchesAny(host, patterns: safariDomains) { return .safari }
+        if DomainPattern.matchesAny(host, patterns: inAppDomains) { return .inApp }
+
+        switch externalLinkPolicy {
+        case .inApp:
+            return .inApp
+        case .safari:
+            // 字面意义的"全都甩出去"，用户既然选了这个就不替他耍小聪明
+            return .safari
+        case .sameDomain:
+            if isSameSite(url) { return .inApp }
+            // 登录 / 授权流留在站内：甩进 Safari 的话回调落在 Safari，这边永远等不到
+            if Site.looksLikeAuthFlow(url) { return .inApp }
+            return .safari
+        }
+    }
 
     // MARK: - Decoding
 
@@ -112,6 +147,9 @@ struct Site: Identifiable, Codable, Hashable, Sendable {
         zoom = (try c.decodeIfPresent(Double.self, forKey: .zoom) ?? 1.0).clamped(to: Site.zoomRange)
         userAgent = try c.decodeIfPresent(String.self, forKey: .userAgent)
         externalLinkPolicy = try c.decodeIfPresent(ExternalLinkPolicy.self, forKey: .externalLinkPolicy) ?? .sameDomain
+        linkScope = try c.decodeIfPresent(LinkScopeStrictness.self, forKey: .linkScope) ?? .registrableDomain
+        inAppDomains = try c.decodeIfPresent([String].self, forKey: .inAppDomains) ?? []
+        safariDomains = try c.decodeIfPresent([String].self, forKey: .safariDomains) ?? []
         profile = try c.decodeIfPresent(String.self, forKey: .profile) ?? id.uuidString
         iconSource = try c.decodeIfPresent(IconSource.self, forKey: .iconSource) ?? .automatic
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
@@ -134,7 +172,7 @@ enum ExternalLinkPolicy: String, Codable, Hashable, Sendable, CaseIterable, Iden
     case inApp
     /// 一切外链都交给 Safari
     case safari
-    /// 主域及子域站内，其余交给 Safari（默认）
+    /// 按 `Site.linkScope` 的档位判断（默认）。rawValue 留着历史拼写，老配置才导得进来。
     case sameDomain
 
     var id: String { rawValue }
@@ -151,7 +189,7 @@ enum ExternalLinkPolicy: String, Codable, Hashable, Sendable, CaseIterable, Iden
         switch self {
         case .inApp: "所有链接都留在这个窗口里"
         case .safari: "任何链接都甩给 Safari"
-        case .sameDomain: "主域及子域留在站内，其余交给 Safari"
+        case .sameDomain: "按下面的档位决定什么算站内，其余交给 Safari"
         }
     }
 }
@@ -178,6 +216,7 @@ extension Site {
             zoom: defaults.zoom,
             userAgent: defaults.userAgent,
             externalLinkPolicy: defaults.externalLinkPolicy,
+            linkScope: defaults.linkScope,
             profile: Site.adHocProfile,
             iconSource: .monogram
         )
@@ -193,7 +232,7 @@ extension Site {
     /// `.linkActivated`（是表单提交和重定向），本来就不会被拦，最后回调回自己域名时又是站内了。
     ///
     /// 宁可放过不可错杀：判宽一点最多是某个外站的登录页留在了站内，用户还能从工具箱丢去 Safari；
-    /// 判窄了就是登不上。
+    /// 判窄了就是登不上。真要精确控制，站点设置里的「强制 Safari」名单压得过它。
     static func looksLikeAuthFlow(_ url: URL) -> Bool {
         guard let host = normalizedHost(of: url) else { return false }
         if authHosts.contains(where: { host == $0 || host.hasSuffix("." + $0) }) { return true }

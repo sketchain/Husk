@@ -2,12 +2,14 @@ import SwiftUI
 
 /// 浏览界面：全屏 WebView，除页面外没有任何常驻 UI。
 /// 顶部一条细进度条，加载完淡出；其余一切靠手势唤出的工具箱。
+///
+/// 现在它是**根视图层面**的一层，不是模态。这样 deep link 进来时不必先有个首页
+/// 再盖上去，站 A 跳站 B 也不用"先 dismiss 再 present"。
 struct BrowserScreen: View {
     @Environment(SiteStore.self) private var store
 
     @State private var session: WebSession
     @State private var showToolbox = false
-    @State private var showSiteSettings = false
 
     /// 临时站点不在列表里，配置改不了也存不下
     let canPersist: Bool
@@ -42,27 +44,19 @@ struct BrowserScreen: View {
         .overlay(alignment: .top) { TopProgressBar(progress: session.progress, isLoading: session.isLoading) }
         .overlay(alignment: .bottom) { handoffToast }
         .overlay(alignment: .bottomTrailing) { escapeHatch }
+        // 全局开关：浏览网页时把时间电池那条一起藏掉
+        .statusBarHidden(store.settings.hideStatusBarWhileBrowsing)
         .sheet(isPresented: $showToolbox) {
             ToolboxSheet(
                 session: session,
                 canPersist: canPersist,
-                onCommitZoom: commitZoom,
-                onOpenSiteSettings: { showSiteSettings = true },
                 onExitToLibrary: onExit
             )
-        }
-        .sheet(isPresented: $showSiteSettings) {
-            NavigationStack {
-                SiteEditorView(site: session.site, mode: .edit) { updated in
-                    store.update(updated)
-                    session.site = updated
-                }
-            }
         }
         .fullScreenCover(item: popupBinding) { popup in
             PopupBrowserView(popup: popup) { session.popup = nil }
         }
-        // 站点在别处被改了（比如设置页），把新配置同步进当前会话
+        // 站点在别处被改了（比如设置 tab），把新配置同步进当前会话
         .onChange(of: store.sites) { _, sites in
             guard canPersist, let updated = sites.first(where: { $0.id == session.site.id }) else { return }
             session.site = updated
@@ -71,13 +65,6 @@ struct BrowserScreen: View {
 
     private var popupBinding: Binding<PopupSession?> {
         Binding(get: { session.popup }, set: { session.popup = $0 })
-    }
-
-    private func commitZoom(_ zoom: Double) {
-        guard canPersist else { return }
-        var site = session.site
-        site.zoom = zoom
-        store.update(site)
     }
 
     // MARK: - 覆盖层
@@ -93,11 +80,10 @@ struct BrowserScreen: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .frame(width: 38, height: 38)
-                    .background(.ultraThinMaterial, in: Circle())
+                    .frame(width: 40, height: 40)
             }
-            .buttonStyle(SpringyPressStyle())
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
             .padding(.trailing, 14)
             .padding(.bottom, 14)
         }
@@ -106,39 +92,26 @@ struct BrowserScreen: View {
     @ViewBuilder
     private var handoffToast: some View {
         if let notice = session.handoffNotice {
-            Text(notice)
-                .font(.footnote.weight(.medium))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial, in: Capsule())
+            GlassToast(text: notice)
                 .padding(.bottom, 26)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
                 .animation(.spring(response: 0.35, dampingFraction: 0.8), value: session.handoffNotice)
         }
     }
 
     private func failureOverlay(_ error: String) -> some View {
-        VStack(spacing: 16) {
-            Image(systemName: "wifi.exclamationmark")
-                .font(.system(size: 38))
-                .foregroundStyle(Theme.secondaryText)
-            Text("打不开这个页面")
-                .font(.headline)
+        ContentUnavailableView {
+            Label("打不开这个页面", systemImage: "wifi.exclamationmark")
+        } description: {
             Text(error)
-                .font(.footnote)
-                .foregroundStyle(Theme.secondaryText)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
+        } actions: {
             HStack(spacing: 12) {
                 Button("重试") { session.reload() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glassProminent)
                 Button("返回列表", action: onExit)
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
             }
             .tint(Theme.accent)
         }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.background)
     }
 }

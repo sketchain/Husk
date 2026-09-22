@@ -50,18 +50,10 @@ final class WebSession {
     func goBack() { webView?.goBack() }
     func goForward() { webView?.goForward() }
 
-    /// 缩放滑块拖动时实时调用。写回配置由调用方在松手时做。
-    func applyZoom(_ value: Double) {
-        site.zoom = value.clamped(to: Site.zoomRange)
-        webView?.pageZoom = site.zoom
-    }
-
-    /// 改 UA 必须 reload 才对当前页生效——`customUserAgent` 只影响之后发出的请求。
-    func applyUserAgent(_ userAgent: String?) {
-        site.userAgent = userAgent
-        webView?.customUserAgent = userAgent
-        webView?.reloadFromOrigin()
-    }
+    // 缩放和 UA 没有单独的遥控方法：改 `site` 就行。
+    // `BrowserWebView.updateUIView` 会跟 coordinator 里记下的上一次值比对，
+    // 只有真变了才动 WebView（UA 还要顺带 reloadFromOrigin）。
+    // 工具箱和站点设置页共用同一条路径，不用各写一遍。
 
     var shareURL: URL { currentURL ?? site.url }
 

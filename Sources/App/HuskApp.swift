@@ -1,17 +1,19 @@
+import AppIntents
 import SwiftUI
 
 @main
 struct HuskApp: App {
-    @State private var store = SiteStore()
-    @State private var icons = IconStore()
-    @State private var router = Router()
+    /// 只为了 `configurationForConnecting`：冷启动的 husk:// 要在第一帧之前拿到。
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup {
             RootView()
-                .environment(store)
-                .environment(icons)
-                .environment(router)
+                // 三个真相来源都是进程级单例（AppDelegate 和 App Intents 都够不着 @State），
+                // 这里只是把它们送进 environment 供视图取用
+                .environment(SiteStore.shared)
+                .environment(IconStore.shared)
+                .environment(Router.shared)
                 .tint(Theme.accent)
                 // 整个 app 锁深色（Info.plist 里也写了 UIUserInterfaceStyle=Dark）。
                 // 顺带让 WKWebView 的 prefers-color-scheme 跟着深色走。
@@ -20,49 +22,42 @@ struct HuskApp: App {
     }
 }
 
+/// 根视图。首页常驻在底下，浏览界面直接盖在它上面。
+///
+/// 为什么不是 `.fullScreenCover`：模态呈现有自己的动画和生命周期，
+/// deep link 冷启动时必然是"先有首页，再上滑盖住"，站 A 跳站 B 还要先 dismiss
+/// 再 present。换成同一个 ZStack 里的一层之后，换站就是换一个 `id`，
+/// 中间没有任何一帧属于别人。
+///
+/// 首页**留在层级里**而不是被 if/else 换掉：这样从站点退回来时
+/// tab 选中项、滚动位置都还在。
 struct RootView: View {
     @Environment(SiteStore.self) private var store
     @Environment(Router.self) private var router
 
     var body: some View {
         ZStack {
-            Theme.background.ignoresSafeArea()
+            HomeTabs()
 
-            if router.launchResolved {
-                HomeScreen { site in router.open(site) }
-                    .transition(.opacity)
-            } else {
-                // 冷启动挡板：和启动屏同色，所以看上去就是启动屏还没消失
-                LaunchPlaceholder()
+            if let active = router.active {
+                BrowserScreen(site: active.site, canPersist: active.canPersist) {
+                    router.close()
+                }
+                // 换 id = 换会话。同一个站点重复打开时 Router 不会换 id，
+                // 所以什么都不会重建。
+                .id(active.id)
+                .transition(.move(edge: .bottom))
             }
-        }
-        .animation(.easeOut(duration: 0.2), value: router.launchResolved)
-        .fullScreenCover(item: activeBinding) { active in
-            BrowserScreen(site: active.site, canPersist: active.canPersist) {
-                router.close()
-            }
-            .environment(store)
         }
         .onOpenURL { url in
-            router.handle(url, store: store)
+            router.handleOpenURL(url, store: store)
         }
-        .task {
-            await router.settleLaunch()
+        // App Intents 的 scene 派发：告诉系统这个场景什么 intent 都能接
+        .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+        // iOS 26：系统在把 app 端到前台**之前**先把 intent 送到这里，
+        // 所以快捷指令冷启动也能在第一帧就已经是"正在浏览"的状态。
+        .onAppIntentExecution(OpenSiteIntent.self) { intent in
+            router.open(siteID: intent.site.id, store: store, animated: false)
         }
-    }
-
-    private var activeBinding: Binding<ActiveSite?> {
-        Binding(
-            get: { router.active },
-            set: { if $0 == nil { router.close() } }
-        )
-    }
-}
-
-private struct LaunchPlaceholder: View {
-    var body: some View {
-        Image(systemName: "square.grid.2x2.fill")
-            .font(.system(size: 34))
-            .foregroundStyle(Theme.accent.opacity(0.35))
     }
 }

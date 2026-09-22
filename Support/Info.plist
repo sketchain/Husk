@@ -44,6 +44,22 @@
 		<true/>
 	</dict>
 
+	<!-- 只申请「添加到相册」。存主屏图标用得着往里写，用不着读用户的照片，
+	     所以刻意不写 NSPhotoLibraryUsageDescription——那一条是完整读写权限。
+	     站点设置里的「从相册选一张」走 PhotosPicker，是进程外选择器，本来就不需要权限。 -->
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>把站点图标存成 1024×1024 的图片，方便在「快捷指令」里作为主屏图标使用。</string>
+
+	<!-- App Intents 把 intent 派发给场景（让快捷指令冷启动也不闪首页）要求 app
+	     声明支持多场景，哪怕实际上只有一个窗口。见 Sources/App/HuskApp.swift 的
+	     onAppIntentExecution。不写 UISceneConfigurations：场景配置由
+	     AppDelegate.application(_:configurationForConnecting:options:) 给。 -->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+	</dict>
+
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
