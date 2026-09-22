@@ -32,14 +32,26 @@ open Husk.xcodeproj
 
 个人开发者账号（免费）装上去，app 每 7 天过期一次，重新用 Xcode 装一下就行。
 
+### 下载
+
+最新版的未签名 ipa 永远在这个**固定链接**上（每次合进 `main` 自动更新）：
+
+```
+https://github.com/sketchain/Husk/releases/latest/download/Husk-unsigned.ipa
+```
+
+文件名刻意不带版本号，就是为了这条链接不用改。版本号写在 Release 标题、说明和 ipa 里 `Info.plist` 的 `CFBundleShortVersionString` 中。
+
 ### CI（GitHub Actions）
 
-`.github/workflows/build.yml`：push 到 `main` 或 `claude/**` 分支、以及手动触发时跑。
+`.github/workflows/build.yml`：push 到 `claude/**` 分支、以及手动触发时跑，**只编译不发版**。
+
+`main` 刻意不在它的触发列表里——合进 `main` 走 `release.yml`，后者用 `workflow_call` 复用同一套编译步骤再接着发版，两边都监听的话同一个提交会编译两遍。
 
 - runner `macos-26`（Apple Silicon，2026-02 起 GA），默认 Xcode 26.6，自带 iOS 26.x SDK
 - `brew install xcodegen` → `xcodegen generate` → `xcodebuild build`
 - **只编译不签名**（`CODE_SIGNING_ALLOWED=NO`），CI 上没有证书
-- 产物是未签名的 `Husk-unsigned.ipa`（就是个 zip，里面 `Payload/Husk.app`），留存 30 天
+- 产物是未签名的 `Husk-unsigned.ipa`（就是个 zip，里面 `Payload/Husk.app`），作为 artifact 留存 30 天
 
 下载下来之后用你自己的证书签：
 
@@ -52,30 +64,31 @@ zip -qry Husk-signed.ipa Payload
 
 或者直接把 `Payload/Husk.app` 丢给 Xcode / 你惯用的侧载工具。
 
-### 发版
+### 发版：合进 main 就自动发
 
-打个 `v` 开头的 tag 推上去就行，剩下的 `.github/workflows/release.yml` 全包了：
+`.github/workflows/release.yml`。**什么都不用做**——改动合进 `main`、编译通过，就会自动建 tag、建 Release、传 ipa。不需要任何人有推 tag 的权限。
+
+版本号由 CI 自己算：取仓库里**最新那个 Release 的版本号，末位 +1**（`v1.2.9` → `v1.2.10`）。一个 Release 都还没有就从 `v0.1.0` 起。算出来的号要是已经被某个 tag 或 Release 占了（手动发过版、或者 Release 删了 tag 还在），就继续 +1 直到空位。
+
+整条流水线：
+
+1. **version** — 算出这次的版本号
+2. **build** — 复用 `build.yml` 的编译步骤（`workflow_call`，不是复制一份），把版本号注进去：`v1.2.0` → `MARKETING_VERSION=1.2.0`，`CURRENT_PROJECT_VERSION` 用 workflow 的运行序号；打包前 `PlistBuddy` 读一遍确认真写进去了
+3. **publish** — 建 tag + Release，标题 `Husk v1.2.0`，把 `Husk-unsigned.ipa` 作为 **Release 附件**上传（不是 artifact，不会过期）
+
+Release 说明里有：未签名提示、上面那条固定直链、**本次包含的提交列表**（跟上一个 Release 做 compare 得来）、以及 GitHub 自动生成的那段。
+
+原来那两个入口都还在：
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.2.0 && git push origin v1.2.0     # 手动指定版本号
 ```
 
-没有本地仓库、或者推 tag 的权限受限时，也可以在 Actions 页面手动跑
-**Release** 这个 workflow，填上版本号（`v1.2.0`）——tag 不存在的话由 CI
-建在触发时所在的提交上，结果和上面完全一样。
+或者在 Actions 页面手动跑 **Release**，填上版本号——tag 不存在的话由 CI 建在触发时所在的提交上。这两条路径**撞上已有的 Release 会直接报错**而不是悄悄跳过：手动填了个发过的版本号，基本只可能是填错了。
 
-它会：
+版本号里带连字符的（`v1.2.0-beta1`）按 semver 惯例自动标成预发布，`releases/latest` 不会指向它；自动算出来的号永远不带连字符。
 
-1. 复用 `build.yml` 的编译步骤（`workflow_call`，不是复制一份）
-2. 把版本号从 tag 推出来注入编译：`v1.2.0` → `MARKETING_VERSION=1.2.0`，
-   `CURRENT_PROJECT_VERSION` 用 workflow 的运行序号；打包前会 `PlistBuddy` 读一遍确认写进去了
-3. 建一个 GitHub Release，标题 `Husk v1.2.0`，更新说明由 GitHub 按提交自动生成
-4. 把 `Husk-1.2.0-unsigned.ipa` 作为 **Release 附件**上传（不是 artifact，不会过期）
-
-tag 里带连字符的（`v1.2.0-beta1`）按 semver 惯例自动标成预发布。
-
-版本号只在发版时由 tag 决定，日常 push 到 `main` 走的还是 `project.yml` 里写死的值。
+功能分支 push 不发版，只编译。
 
 ---
 
@@ -185,6 +198,30 @@ tab bar 上方有一条 **`tabViewBottomAccessory`**「继续上次」：上次�
 **站点配置** — 图标（自动抓取 / 相册选图 / 首字母渐变）、缩放 10%–200%、UA（6 个预设 + 自填）、外链行为与档位、手动例外名单、存储 profile。
 
 **全局设置** — 浏览时隐藏状态栏、手势开关、新建站点默认值、图标（Google 回退开关 / 批量存图标）、配置导入导出（JSON）、存储管理（按站点清 / 全部清 / 孤儿清理）。
+
+设置页最底下压着一条不起眼的**「实验室」**，见下。
+
+---
+
+## 实验室：灵动岛几何探测
+
+设置 → 最底部 → 实验室。为「加载进度环绕灵动岛」做的前期验证，**本身不画进度环**。
+
+公开 API 拿不到灵动岛的位置和尺寸：`safeAreaInsets.top` 只给一个高度，横向范围完全没有，圆角更没有。已知唯一的来源是私有属性 **`UIScreen._exclusionArea`**——按逆向资料它返回一个 `UISDisplaySingleRectShape`，其 `rect` 是**传感器避让区的外接矩形**（单位 screen points），iOS 16 到 26 都有使用证据。本 app 自签侧载，用私有 API 没有上架风险。
+
+但它给的是避让区，不保证和系统画的那颗黑胶囊边缘严丝合缝，也不带圆角。所以这一页做两件事：
+
+**1. 原始诊断信息**（一键复制全部）：`utsname.machine`、iOS 版本、`UIScreen` 的 bounds / nativeBounds / scale / nativeScale、`_displayCornerRadius`、当前窗口的 `safeAreaInsets`、以及 `_exclusionArea` 的读取结果——返回对象的类名、`description`、取到的 `rect`。读失败时写清楚**卡在哪一步**。
+
+**2. 可视化叠加**：按读到的 rect 在全屏最上层画一圈 1pt 细描边，圆角半径 / 向外扩 / X 偏移 / Y 偏移全是滑块，实时生效并显示数值。调到和灵动岛贴合为止，参数会跟着诊断信息一起进剪贴板。
+
+三个实现上的点：
+
+- **KVC 每一跳都先 `responds(to:)`**。对不存在的 key 调 `value(forKey:)` 抛的是 ObjC 的 `NSUnknownKeyException`，Swift 的 `do-catch` 根本接不住，结果是直接闪退。私有 API 随时会改名、换类型或消失，所以每一步都先确认选择器在，不在就带着"卡在哪一步"原地返回。取出来的 `NSValue` 还要比一遍 `objCType` 再碰 `cgRectValue`——类型对不上时它不是返回 nil 而是崩。
+- **描边挂在自己的 `UIWindow` 上**，不是 SwiftUI 的 `.overlay`。要在离开这一页之后还看得见，否则页面自己的导航栏就挡在灵动岛底下，根本没法观察。窗口 `hitTest` 永远返回 nil（触摸全部穿透，UI 照常能用），并且**不** `makeKeyAndVisible`（key window 仍是 SwiftUI 那个，状态栏归它管，浏览页的「隐藏状态栏」不受影响），层级压在 `.normal + 1`。
+- **读不到时退回估计值**并在页面上明确标注"这是估计值不是读取值"：灵动岛机型上那颗胶囊普遍是 126 × 37.33 pt、距顶 11 pt、水平居中。
+
+校准参数存 `UserDefaults`，刻意不进 `AppSettings`——调试用的临时值，不该混进导出的配置 JSON。
 
 ---
 
@@ -315,6 +352,7 @@ Sources/
   Browser/      浏览界面、进度条、工具箱 sheet
   Home/         TabView、站点网格、"继续上次"
   SettingsUI/   站点设置、共用的本站设置分区、全局设置、存储管理
+  Lab/          实验室：灵动岛几何探测（私有 API 安全读取）、描边叠加窗口
   Util/         主题、玻璃提示条、分享面板
 Resources/
   public_suffix_list.dat

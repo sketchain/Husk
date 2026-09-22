@@ -27,6 +27,7 @@ struct GlobalSettingsView: View {
             transferSection
             storageSection
             aboutSection
+            labSection
         }
         .navigationTitle("设置")
         .sheet(item: $exportFile) { file in ShareSheet(items: [file.url]) }
@@ -180,6 +181,20 @@ struct GlobalSettingsView: View {
             Text("关于")
         } footer: {
             Text("Husk · 明确不做多标签、书签、历史、广告拦截、下载管理、阅读模式。")
+        }
+    }
+
+    /// 压在最底下、没有图标、字号压到 caption：这是给开发者在真机上验证私有 API 用的，
+    /// 不是给用户的功能，不该在设置里跳出来。
+    private var labSection: some View {
+        Section {
+            NavigationLink {
+                LabView()
+            } label: {
+                Text("实验室")
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondaryText)
+            }
         }
     }
 

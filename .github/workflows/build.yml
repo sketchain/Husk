@@ -1,9 +1,11 @@
 name: Build
 
 on:
-  # 除了 main 和手动触发，也跑 claude/** 分支——功能分支在合回去之前就能看到编译结果
+  # 功能分支 push 只编译不发版。
+  # main 刻意**不**在这里：合进 main 走 release.yml，它用 workflow_call 复用下面这套
+  # 步骤再接着发版——两边都监听 main 的话同一个提交会编译两遍。
   push:
-    branches: [main, 'claude/**']
+    branches: ['claude/**']
   workflow_dispatch:
     inputs:
       version_tag:
@@ -31,7 +33,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.ref }}
+  # 带上 github.workflow：被 release.yml 以 workflow_call 调起来时这里是 "Release"，
+  # 和功能分支自己那条 "Build" 分开，免得两条路互相取消。
+  group: build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -54,18 +58,21 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks | grep -i ios || true
 
-      # 版本号只在发版时由 tag 决定；日常 push 保持 project.yml 里的值不动。
+      # 版本号只在发版时由调用方给；日常 push 保持 project.yml 里的值不动。
+      #
+      # .ipa 的**文件名固定是 Husk-unsigned.ipa**，不带版本号——这样
+      # releases/latest/download/Husk-unsigned.ipa 这个链接永远指向最新版。
+      # 版本号写在 Release 标题、说明和 .app/Info.plist 里，不写在文件名里。
       - name: 确定版本与文件名
         id: meta
         run: |
           TAG="${{ inputs.version_tag }}"
+          IPA="Husk-unsigned.ipa"
           if [ -n "$TAG" ]; then
             VERSION="${TAG#v}"                       # v1.2.0 → 1.2.0
-            IPA="Husk-${VERSION}-unsigned.ipa"
-            ARTIFACT="Husk-${VERSION}-unsigned-ipa"
+            ARTIFACT="Husk-unsigned-ipa-${VERSION}"
           else
             VERSION=""
-            IPA="Husk-unsigned.ipa"
             ARTIFACT="Husk-unsigned-ipa-${GITHUB_SHA}"
           fi
           {
