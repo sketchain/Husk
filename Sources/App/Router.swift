@@ -56,11 +56,15 @@ final class Router {
     }
 
     static func adHocKey(_ url: URL) -> String {
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        components?.fragment = nil
-        components?.scheme = components?.scheme?.lowercased()
-        components?.host = components?.host?.lowercased()
-        return components?.url?.absoluteString ?? url.absoluteString
+        // 先解包再改：对 Optional 直接写 `c?.scheme = c?.scheme?.lowercased()`
+        // 是同一块存储上的读写重叠，Swift 6 的独占访问检查直接报错。
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
+        }
+        components.fragment = nil
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        return components.url?.absoluteString ?? url.absoluteString
     }
 
     /// 打开一个站点。目标就是当前这个的话**什么都不做**——
