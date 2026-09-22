@@ -85,9 +85,14 @@ final class IconStore {
         image(for: site).pngData()
     }
 
-    /// 存到相册用的 1024×1024 主屏图标
+    /// 存到相册用的 1024×1024 主屏图标。
+    ///
+    /// 这里**刻意不用 `image(for:)`**：它抓不到图标时会返回一张 180 像素的占位图，
+    /// 而占位图和真图标在那个返回值上分不出来——导出那边会把它当成"一张 180 的源图"
+    /// 放大到 1024，结果是一个糊掉的字母。走 `loadFromDisk` 就只有真存在的
+    /// 抓取缓存或自选图片才返回，抓不到就是 nil，交给导出那边按占位图风格**重画**一张。
     func homeScreenIconPNG(for site: Site) -> Data? {
-        IconExporter.makeIcon(for: site, source: image(for: site))
+        IconExporter.makeIcon(for: site, source: loadFromDisk(site))
     }
 
     /// 快捷指令列表里那张小图。太大的话会让整个实体列表变得很重，缩到 128 足够。

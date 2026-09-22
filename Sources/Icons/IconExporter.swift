@@ -24,7 +24,7 @@ enum IconExporter {
     /// 这里读到的像素数就和源图的真实清晰度没关系了。
     static let minimumSourcePixels: CGFloat = 128
 
-    /// 生成 PNG。`source` 传首页上显示的那张图。
+    /// 生成 PNG。`source` 是磁盘上真存在的那张图标，没有就传 nil。
     static func makeIcon(for site: Site, source: UIImage?) -> Data? {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1        // 固定 1x：产出的是 PNG 文件，不跟屏幕 scale 走
@@ -52,7 +52,8 @@ enum IconExporter {
         return image.pngData()
     }
 
-    /// 源图够不够大、该不该用
+    /// 源图够不够大、该不该用。
+    /// `source` 传 nil 表示压根没有真图标（调用方负责判断，见 `IconStore.homeScreenIconPNG`）。
     private static func usableSource(site: Site, source: UIImage?) -> UIImage? {
         guard site.iconSource != .monogram, let source else { return nil }
         let pixels = max(source.size.width * source.scale, source.size.height * source.scale)
