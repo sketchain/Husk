@@ -1,11 +1,17 @@
 name: Release
 
-# 两种发版方式，结果一样：
-#   1. 打 tag 推上去：git tag v1.2.0 && git push origin v1.2.0
-#   2. 在 Actions 页面手动跑这个 workflow，填版本号——tag 不存在时由 CI 建在
-#      触发时所在的提交上。没有本地仓库、或者推 tag 的权限受限时用这条。
+# 三种发版方式，结果一样：
+#   1. **合进 main**（主路径）：编译通过后自动建 tag + Release，版本号由 CI 自己算，
+#      不依赖任何人有推 tag 的权限。
+#   2. 打 tag 推上去：git tag v1.2.0 && git push origin v1.2.0
+#   3. 在 Actions 页面手动跑这个 workflow，填版本号——tag 不存在时由 CI 建在
+#      触发时所在的提交上。
+#
+# 2 和 3 是显式指定版本号的入口，撞上已有 Release 会**直接报错**而不是悄悄跳过：
+# 手动填了一个已经发过的版本号，基本只可能是填错了。
 on:
   push:
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -17,20 +23,97 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # 不取消进行中的那个：版本号是在 version job 里现算的，让后来的那次排队等着，
+  # 轮到它时读到的"最新 Release"才是对的。
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  # 不复制一份编译步骤，直接复用 build.yml（它开了 workflow_call）。
-  # 版本号从 tag 推出来，注入 MARKETING_VERSION。
+  # 先把版本号定下来，再喂给编译——MARKETING_VERSION 要在编译时就写进 Info.plist。
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - name: 算版本号
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANUAL: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+
+          tag_exists()     { gh api "repos/$REPO/git/ref/tags/$1"  >/dev/null 2>&1; }
+          release_exists() { gh api "repos/$REPO/releases/tags/$1" >/dev/null 2>&1; }
+
+          # 末位 +1：v1.2.9 → v1.2.10。带 -beta1 / +build 这类后缀的先削掉再加。
+          bump() {
+            local raw="${1#v}"
+            raw="${raw%%-*}"
+            raw="${raw%%+*}"
+            local last="${raw##*.}"
+            case "$last" in
+              ''|*[!0-9]*) echo "版本号 '$1' 的末位不是数字，没法自动 +1" >&2; return 1 ;;
+            esac
+            # 10# 前缀防止 08 / 09 被当成八进制
+            local next=$((10#$last + 1))
+            if [ "$raw" = "$last" ]; then   # 只有一段，比如 v3
+              echo "v$next"
+            else
+              echo "v${raw%.*}.$next"
+            fi
+          }
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$MANUAL"
+            case "$VERSION" in v*) ;; *) VERSION="v$VERSION" ;; esac
+            if release_exists "$VERSION"; then
+              echo "::error::Release $VERSION 已经存在。手动发版不覆盖已有版本——换个版本号，或者直接把改动合进 main 让 CI 自己算。"
+              exit 1
+            fi
+            # tag 已存在但还没发过 Release 是允许的：Release 就建在那个 tag 上。
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="$GITHUB_REF_NAME"
+            if release_exists "$VERSION"; then
+              echo "::error::tag $VERSION 已经有对应的 Release 了，不重复发。"
+              exit 1
+            fi
+          else
+            # 合进 main：取最新的 Release（含预发布和草稿，避免撞号）把末位 +1
+            LATEST="$(gh api "repos/$REPO/releases?per_page=1" --jq '.[0].tag_name // empty' || true)"
+            if [ -z "$LATEST" ]; then
+              VERSION="v0.1.0"
+              echo "仓库里还没有 Release，从 $VERSION 起"
+            else
+              VERSION="$(bump "$LATEST")"
+              echo "最新 Release 是 $LATEST，下一个是 $VERSION"
+            fi
+            # tag 或 Release 已经占了位就继续往上加（手动发过版、或者 Release 被删了
+            # 但 tag 还在，都会撞上），直到找到空位为止
+            while tag_exists "$VERSION" || release_exists "$VERSION"; do
+              echo "$VERSION 已被占用，继续 +1"
+              VERSION="$(bump "$VERSION")"
+            done
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "本次发版：$VERSION"
+          echo "### 本次发版：\`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # 不复制一份编译步骤，直接复用 build.yml（它开了 workflow_call）
   build:
+    needs: version
     uses: ./.github/workflows/build.yml
     with:
-      # tag 触发时 inputs 为空，取 ref_name；手动触发时取填的版本号
-      version_tag: ${{ inputs.version || github.ref_name }}
+      version_tag: ${{ needs.version.outputs.version }}
 
   publish:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
     permissions:
-      # 建 Release 要写权限。顶层是 read，这里按 job 单独放开。
+      # 建 tag 和 Release 要写权限。顶层是 read，这里按 job 单独放开。
       contents: write
 
     steps:
@@ -45,37 +128,63 @@ jobs:
           # 用 runner 自带的 gh，不引第三方 action
           GH_TOKEN: ${{ github.token }}
           IPA: ${{ needs.build.outputs.ipa_name }}
-          VERSION: ${{ inputs.version || github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
           test -f "$IPA" || { echo "没拿到 $IPA"; ls -la; exit 1; }
 
-          # 更新说明 = 一段未签名提示 + GitHub 按提交/PR 自动生成的那段。
+          # 上一个 Release。必须在建新 Release **之前**读，否则读到的就是自己。
+          PREV="$(gh api "repos/$REPO/releases?per_page=1" --jq '.[0].tag_name // empty' || true)"
+
+          # 更新说明 = 未签名提示 + 固定直链 + 本次包含的提交 + GitHub 自动生成的那段。
           #
           # 刻意不用 `gh release create --generate-notes --notes "..."` 的组合：
-          # 同时给这两个参数时 gh 到底会不会把自动生成的部分带上，行为并不明确，
+          # 同时给这两个参数时 gh 会不会把自动生成的部分带上，行为并不明确，
           # 万一被吞掉就是"说明少了一半"且不报错。这里直接调 generate-notes 接口
           # 自己拼，结果是确定的。
           NOTES="$RUNNER_TEMP/notes.md"
           {
             echo "附件里的 \`$IPA\` 是**未签名**的，直接装不上设备——用自己的证书签过才能用，步骤见 README 的「CI」一节。"
             echo
-            # target_commitish 在 tag 尚不存在时是必填的（手动触发就是这种情况）
-            gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            echo "固定直链（永远指向最新版）："
+            echo
+            echo "    https://github.com/$REPO/releases/latest/download/$IPA"
+            echo
+            echo "## 本次包含的提交"
+            echo
+            if [ -n "$PREV" ]; then
+              gh api --paginate "repos/$REPO/compare/$PREV...$GITHUB_SHA" \
+                --jq '.commits[] | "- `\(.sha[0:7])` \(.commit.message | split("\n")[0])"' \
+                || echo "_跟 $PREV 比对失败，看下面自动生成的部分。_"
+            else
+              echo "_仓库里还没有上一个 Release，这是第一个版本。_"
+            fi
+            echo
+            # target_commitish 在 tag 尚不存在时是必填的（自动发版就是这种情况）
+            gh api --method POST "repos/$REPO/releases/generate-notes" \
               -f tag_name="$VERSION" -f target_commitish="$GITHUB_SHA" --jq .body \
-              || echo "_自动生成更新说明失败，看提交记录吧。_"
+              || echo "_自动生成更新说明失败，看上面的提交列表吧。_"
           } > "$NOTES"
 
-          # 带连字符的 tag（v1.2.0-beta1 这种）按 semver 惯例标成预发布
+          # 带连字符的版本号（v1.2.0-beta1 这种）按 semver 惯例标成预发布。
+          # 自动算出来的版本号永远不带连字符，所以 releases/latest 一定指向它。
           PRERELEASE=""
           case "$VERSION" in
             *-*) PRERELEASE="--prerelease" ;;
           esac
 
-          # --target 只在 tag 不存在时起作用（由它决定建在哪个提交上），
-          # tag 已存在时 GitHub 会忽略，所以两条触发路径都能用同一行。
+          # --target 决定 tag 建在哪个提交上（tag 已存在时 GitHub 会忽略它），
+          # 所以三条触发路径都能用同一行。
           gh release create "$VERSION" "$IPA" \
-            --repo "$GITHUB_REPOSITORY" \
+            --repo "$REPO" \
             --target "$GITHUB_SHA" \
             --title "Husk $VERSION" \
             --notes-file "$NOTES" \
             $PRERELEASE
+
+          {
+            echo "### 已发布 [$VERSION](https://github.com/$REPO/releases/tag/$VERSION)"
+            echo
+            echo "    https://github.com/$REPO/releases/latest/download/$IPA"
+          } >> "$GITHUB_STEP_SUMMARY"
