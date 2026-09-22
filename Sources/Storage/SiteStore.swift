@@ -91,9 +91,13 @@ final class SiteStore {
 
     func update(_ site: Site) {
         guard let index = sites.firstIndex(where: { $0.id == site.id }) else { return }
+        // 快捷指令那份快照只关心名字和地址（`SiteEntity` 就显示这两样）。
+        // 不做这个判断的话，工具箱里拖一次缩放滑块、在例外域名框里敲一个字，
+        // 都会顺带去刷一遍 App Shortcut 参数——纯属白干。
+        let affectsShortcuts = sites[index].name != site.name || sites[index].url != site.url
         sites[index] = site
         save()
-        refreshShortcuts()
+        if affectsShortcuts { refreshShortcuts() }
     }
 
     func delete(id: UUID) {
