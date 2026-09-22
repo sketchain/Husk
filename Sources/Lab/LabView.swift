@@ -131,16 +131,25 @@ struct LabView: View {
                 .foregroundStyle(.orange)
             }
 
-            LabeledContent("基准矩形") {
-                Text(DynamicIslandProbe.format(overlay.baseRect))
-                    .font(.caption.monospaced())
-            }
-            LabeledContent("描边矩形") {
-                Text(DynamicIslandProbe.format(overlay.outlinedRect))
-                    .font(.caption.monospaced())
+            // 三行读数包一层 Group，省得把 Section 的直接子视图顶到 ViewBuilder 的上限
+            Group {
+                LabeledContent("基准矩形") {
+                    Text(DynamicIslandProbe.format(overlay.baseRect))
+                        .font(.caption.monospaced())
+                }
+                LabeledContent("描边矩形") {
+                    Text(DynamicIslandProbe.format(overlay.outlinedRect))
+                        .font(.caption.monospaced())
+                }
+                // 换机型时先看这行和上面那行差多少：一致就说明实测公式还成立，
+                // 不用再从零拖一遍滑块
+                LabeledContent("实测公式推算") {
+                    Text(DynamicIslandProbe.format(overlay.formulaPillRect))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(Theme.accent)
+                }
             }
 
-            // 包一层 Group 纯粹是为了别把 Section 的直接子视图顶过 ViewBuilder 的 10 个上限
             Group {
                 // 超过高度一半就被 RoundedRectangle 夹成胶囊了，再往上拖没有任何区别——
                 // 不标出来的话会以为"圆角 24 和 40 长得一样"是自己看错了
