@@ -8,6 +8,9 @@ struct AppSettings: Codable, Hashable, Sendable {
     var allowGoogleFaviconFallback: Bool
     /// 浏览网页时把状态栏（时间、电池那条）整条藏掉
     var hideStatusBarWhileBrowsing: Bool
+    /// 浏览页加载进度的样式。设备不支持「环绕灵动岛」时运行时自动退回细条，
+    /// 这里存的仍是用户的选择——配置导出到别的设备上照样生效。
+    var progressStyle: ProgressStyle
     /// 上一次打开过的站点，首页底部"继续上次"用它。没有记录时那一条不显示。
     var lastOpenedSiteID: UUID?
 
@@ -16,12 +19,14 @@ struct AppSettings: Codable, Hashable, Sendable {
         newSiteDefaults: SiteDefaults = SiteDefaults(),
         allowGoogleFaviconFallback: Bool = true,
         hideStatusBarWhileBrowsing: Bool = false,
+        progressStyle: ProgressStyle = .topBar,
         lastOpenedSiteID: UUID? = nil
     ) {
         self.gestures = gestures
         self.newSiteDefaults = newSiteDefaults
         self.allowGoogleFaviconFallback = allowGoogleFaviconFallback
         self.hideStatusBarWhileBrowsing = hideStatusBarWhileBrowsing
+        self.progressStyle = progressStyle
         self.lastOpenedSiteID = lastOpenedSiteID
     }
 
@@ -31,7 +36,26 @@ struct AppSettings: Codable, Hashable, Sendable {
         newSiteDefaults = try c.decodeIfPresent(SiteDefaults.self, forKey: .newSiteDefaults) ?? SiteDefaults()
         allowGoogleFaviconFallback = try c.decodeIfPresent(Bool.self, forKey: .allowGoogleFaviconFallback) ?? true
         hideStatusBarWhileBrowsing = try c.decodeIfPresent(Bool.self, forKey: .hideStatusBarWhileBrowsing) ?? false
+        // 认不出的值（将来加了新样式、又用旧版本导入）当成缺省，不让整份设置解码失败
+        progressStyle = (try? c.decodeIfPresent(ProgressStyle.self, forKey: .progressStyle)) ?? .topBar
         lastOpenedSiteID = try c.decodeIfPresent(UUID.self, forKey: .lastOpenedSiteID)
+    }
+}
+
+/// 浏览页加载进度的画法
+enum ProgressStyle: String, Codable, CaseIterable, Identifiable, Sendable {
+    /// 安全区顶上一条 2pt 细条（默认，一直以来的行为）
+    case topBar
+    /// 沿灵动岛轮廓画一圈。设备不支持时自动退回 `topBar`，见 `IslandRingResolver`。
+    case islandRing
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .topBar: "顶部细条"
+        case .islandRing: "环绕灵动岛"
+        }
     }
 }
 

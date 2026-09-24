@@ -12,6 +12,8 @@ struct GlobalSettingsView: View {
     @State private var importConflicts: [Site] = []
     @State private var importSettings = false
     @State private var notice: String?
+    /// 这台设备现在画不画得了灵动岛进度环。进设置页时算一次，只用来写那行说明。
+    @State private var islandRingSupport: IslandRingAvailability?
 
     var body: some View {
         // @Environment 拿到的 Observable 要绑到 Toggle/Slider 上，得先过一道 @Bindable。
@@ -45,6 +47,9 @@ struct GlobalSettingsView: View {
         .overlay(alignment: .bottom) {
             if let notice { GlassToast(text: notice).padding(.bottom, 16) }
         }
+        .onAppear {
+            islandRingSupport = IslandRingResolver.resolve(in: ExclusionAreaReader.activeScene)
+        }
     }
 
     // MARK: - 浏览
@@ -52,10 +57,36 @@ struct GlobalSettingsView: View {
     private func browsingSection(_ bindable: Bindable<SiteStore>) -> some View {
         Section {
             Toggle("浏览时隐藏状态栏", isOn: bindable.settings.hideStatusBarWhileBrowsing)
+            Picker("加载进度", selection: bindable.settings.progressStyle) {
+                ForEach(ProgressStyle.allCases) { Text($0.title).tag($0) }
+            }
+            if store.settings.progressStyle == .islandRing, let note = islandRingNote {
+                Label(note.text, systemImage: note.fallsBack ? "info.circle" : "checkmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(note.fallsBack ? .orange : Theme.secondaryText)
+            }
         } header: {
             Text("浏览")
         } footer: {
-            Text("把顶上时间、信号、电池那条一起藏掉，整屏都是网页。只影响浏览界面，首页不受影响。")
+            Text("隐藏状态栏：把顶上时间、信号、电池那条一起藏掉，整屏都是网页。只影响浏览界面，首页不受影响。\n环绕灵动岛：加载进度沿着灵动岛画一圈，不影响状态栏开关。读不到灵动岛的设备、以及横屏时，自动用顶部细条。")
+        }
+    }
+
+    /// 「环绕灵动岛」在这台设备上会不会真的生效。
+    ///
+    /// 选项在所有设备上都照常显示、照常可选，只是在这儿注明会退回细条：
+    /// 设置是能导出导入的，在 iPad 上改配置、导到 iPhone 上用是正常的用法，
+    /// 藏起来或者禁用都会让这个值在不支持的设备上看不见、改不了。
+    private var islandRingNote: (text: String, fallsBack: Bool)? {
+        switch islandRingSupport {
+        case nil:
+            return nil
+        case .available:
+            return ("这台设备支持。横屏时仍用顶部细条。", false)
+        case .fallback(.landscape):
+            return ("现在是横屏，横屏下用顶部细条（还没在真机上验证过）。竖屏时才会绕着灵动岛画。", true)
+        case .fallback(let reason):
+            return ("\(reason.summary)，浏览时会用顶部细条。", true)
         }
     }
 

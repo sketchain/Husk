@@ -1,5 +1,4 @@
 import Foundation
-import ObjectiveC
 import UIKit
 
 /// 诊断页上的一行"名字：值"
@@ -22,33 +21,14 @@ struct IslandDiagnostics: Sendable {
     var succeeded: Bool { exclusionRect != nil }
 }
 
-/// 读取灵动岛几何信息的探针。
+/// 实验室页的诊断探针：把机型、系统、屏幕、安全区和 `_exclusionArea` 的读取结果
+/// 拼成一份能贴回来的报告。
 ///
-/// 公开 API 拿不到灵动岛的位置和尺寸：`safeAreaInsets.top` 只给一个高度，
-/// 横向范围完全没有，圆角更没有。已知唯一的来源是私有属性
-/// `UIScreen._exclusionArea`——按逆向资料它返回一个 `UISDisplaySingleRectShape`，
-/// 其 `rect` 是**传感器避让区的外接矩形**（单位 screen points），
-/// iOS 16 到 26 都有实际使用证据。
-///
-/// 注意它给的是避让区，不保证和系统画的那颗黑色胶囊边缘严丝合缝，也不给圆角。
-/// 所以这个探针只负责"读到什么如实报出来"，贴不贴得上要靠 `LabView` 的
-/// 可视化叠加在真机上人眼校准。
-///
-/// **为什么每一跳都先 `responds(to:)`**：对不存在的 key 调 `value(forKey:)`
-/// 抛的是 ObjC 的 `NSUnknownKeyException`，Swift 的 `do-catch` 根本接不住，
-/// 结果是直接闪退。私有 API 随时可能改名、换类型或者整个消失，所以这里
-/// 每一步都先确认选择器在，不在就带着"卡在哪一步"原地返回——
-/// 绝不能因为一个测试页把 app 搞崩。
+/// `_exclusionArea` 本身的安全读取（每一跳先 `responds(to:)`）在
+/// `ExclusionAreaReader` 里，浏览页的进度环和这里共用那一份。这里只负责
+/// "读到什么如实报出来"，贴不贴得上要靠 `LabView` 的可视化叠加在真机上人眼校准。
 @MainActor
 enum DynamicIslandProbe {
-    /// `UIScreen` 上那个私有属性的名字
-    private static let exclusionKey = "_exclusionArea"
-
-    /// shape 对象上可能装着矩形的属性名，按可能性从高到低试。
-    /// `rect` 是 `UISDisplaySingleRectShape` 的；`rects` 是多矩形形状的；
-    /// `bounds` 纯属兜底，万一哪天换了个类型。
-    private static let rectKeys = ["rect", "rects", "bounds"]
-
     /// 屏幕圆角，同样是私有属性。和灵动岛无关，但校准时想知道这台设备的
     /// 屏幕圆角有多大——顺手读了一起报出来。
     private static let cornerRadiusKey = "_displayCornerRadius"
@@ -104,83 +84,16 @@ enum DynamicIslandProbe {
             report.fields.append(LabField(label: "窗口 safeAreaInsets", value: "这个 scene 下没有窗口"))
         }
 
-        let probe = probeExclusionArea(on: screen)
-        report.fields.append(contentsOf: probe.fields)
-        report.exclusionRect = probe.rect
-        report.failure = probe.failure
+        let reading = ExclusionAreaReader.read(on: screen)
+        report.fields.append(contentsOf: reading.trace.map { LabField(label: $0.label, value: $0.value) })
+        report.exclusionRect = reading.rect
+        report.failure = reading.failure
+
+        // 浏览页进度环会不会用上这组数——和设置里「环绕灵动岛」的判定是同一个函数
+        let verdict = IslandRingResolver.resolve(in: scene)
+        report.fields.append(LabField(label: "进度环判定", value: verdict.labDescription))
 
         return report
-    }
-
-    // MARK: - `_exclusionArea`
-
-    /// 返回值里的 `fields` 无论成功失败都要拼进报告——失败时它记录的是
-    /// "走到哪一步、看见了什么"，恰恰是最该贴回来的部分。
-    private static func probeExclusionArea(
-        on screen: UIScreen
-    ) -> (fields: [LabField], rect: CGRect?, failure: String?) {
-        var fields: [LabField] = []
-
-        // 第 1 步：UIScreen 上有没有这个选择器
-        guard screen.responds(to: NSSelectorFromString(exclusionKey)) else {
-            fields.append(LabField(label: "_exclusionArea", value: "选择器不存在"))
-            return (
-                fields, nil,
-                "第 1 步：UIScreen 上没有 -_exclusionArea。可能是这个版本的 iOS 改了私有 API，"
-                    + "也可能这台设备本来就没有传感器避让区（无刘海/无灵动岛的机型）。"
-            )
-        }
-
-        // 第 2 步：读出来。选择器已经确认存在，KVC 到这一步不会抛 NSUnknownKeyException。
-        guard let raw = screen.value(forKey: exclusionKey) else {
-            fields.append(LabField(label: "_exclusionArea", value: "选择器在，但返回 nil"))
-            return (
-                fields, nil,
-                "第 2 步：-_exclusionArea 返回了 nil。这台设备大概率没有传感器避让区。"
-            )
-        }
-
-        // 第 3 步：拿到对象，先把身份信息记下来。哪怕后面取 rect 失败，
-        // 这两行也足够判断私有 API 变成了什么样子。
-        let shapeClass = object_getClass(raw).map { NSStringFromClass($0) } ?? "取不到类名"
-        fields.append(LabField(label: "_exclusionArea 类名", value: shapeClass))
-        fields.append(LabField(label: "_exclusionArea description", value: String(describing: raw)))
-
-        guard let shape = raw as? NSObject else {
-            return (
-                fields, nil,
-                "第 3 步：返回的东西不是 NSObject（类名 \(shapeClass)），没法继续用 KVC 往里取。"
-            )
-        }
-
-        // 第 4 步：逐个试候选 key，同样每次先 responds(to:)
-        var triedKeys: [String] = []
-        for key in rectKeys {
-            guard shape.responds(to: NSSelectorFromString(key)) else {
-                triedKeys.append("\(key)✗")
-                continue
-            }
-            triedKeys.append("\(key)✓")
-            let value = shape.value(forKey: key)
-            guard let rect = cgRect(from: value) else {
-                fields.append(
-                    LabField(
-                        label: "\(shapeClass).\(key)",
-                        value: "有这个属性，但取出来不是 CGRect：\(String(describing: value))"
-                    )
-                )
-                continue
-            }
-            fields.append(LabField(label: "取到的 rect（来自 .\(key)）", value: format(rect)))
-            return (fields, rect, nil)
-        }
-
-        fields.append(LabField(label: "试过的 key", value: triedKeys.joined(separator: " ")))
-        return (
-            fields, nil,
-            "第 4 步：\(shapeClass) 上没有任何一个候选 key（\(rectKeys.joined(separator: " / "))）"
-                + "能取出 CGRect。把上面那行 description 贴回来，就能看出矩形藏在哪个属性里。"
-        )
     }
 
     private static func displayCornerRadius(of screen: UIScreen) -> CGFloat? {
@@ -188,32 +101,9 @@ enum DynamicIslandProbe {
         return (screen.value(forKey: cornerRadiusKey) as? NSNumber).map { CGFloat($0.doubleValue) }
     }
 
-    /// CGRect 装进 NSValue 之后的 ObjC 类型编码。算一次存成 String：
-    /// 直接留着 `objCType` 那个指针，会随着产生它的临时 NSValue 一起失效。
-    private static let cgRectEncoding = String(cString: NSValue(cgRect: .zero).objCType)
-
-    /// KVC 把结构体返回值装箱成 NSValue，但**不保证**装的就是 CGRect。
-    /// 类型对不上时 `cgRectValue` 不是返回 nil 而是直接崩，所以先比一遍 objCType。
-    private static func cgRect(from any: Any?) -> CGRect? {
-        if let value = any as? NSValue {
-            guard String(cString: value.objCType) == cgRectEncoding else { return nil }
-            return value.cgRectValue
-        }
-        // 多矩形形状（`rects`）：把所有矩形并起来当外接矩形用
-        if let values = any as? [NSValue] {
-            let rects = values.compactMap { cgRect(from: $0) }
-            guard let first = rects.first else { return nil }
-            return rects.dropFirst().reduce(first) { $0.union($1) }
-        }
-        return nil
-    }
-
     // MARK: - 环境
 
-    static var activeScene: UIWindowScene? {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
-    }
+    static var activeScene: UIWindowScene? { ExclusionAreaReader.activeScene }
 
     /// `utsname.machine`，例如 `iPhone18,1`。模拟器上拿到的是宿主机架构，
     /// 真机标识在 `SIMULATOR_MODEL_IDENTIFIER` 环境变量里。
