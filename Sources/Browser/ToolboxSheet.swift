@@ -22,7 +22,8 @@ struct ToolboxSheet: View {
     @Environment(SiteStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
-    @State private var detent: PresentationDetent = .medium
+    /// 由浏览页持有：拉到大档时浏览页要把灵动岛进度环藏起来，见 `BrowserScreen`
+    @Binding var detent: PresentationDetent
     @State private var copied = false
 
     var body: some View {

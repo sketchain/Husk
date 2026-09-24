@@ -52,10 +52,11 @@ struct GlobalSettingsView: View {
     private func browsingSection(_ bindable: Bindable<SiteStore>) -> some View {
         Section {
             Toggle("浏览时隐藏状态栏", isOn: bindable.settings.hideStatusBarWhileBrowsing)
+            ProgressStyleRows(style: bindable.settings.progressStyle)
         } header: {
             Text("浏览")
         } footer: {
-            Text("把顶上时间、信号、电池那条一起藏掉，整屏都是网页。只影响浏览界面，首页不受影响。")
+            Text("隐藏状态栏：把顶上时间、信号、电池那条一起藏掉，整屏都是网页。只影响浏览界面，首页不受影响。\n环绕灵动岛：加载进度沿着灵动岛画一圈，不影响状态栏开关。读不到灵动岛的设备、以及横屏时，自动用顶部细条。")
         }
     }
 
