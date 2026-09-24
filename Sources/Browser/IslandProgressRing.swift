@@ -24,22 +24,30 @@ struct IslandProgressRing: View {
             let rect = layout.strokeRect.offsetBy(dx: -origin.x, dy: -origin.y)
             let half = min(max(progress, 0), 1) / 2
 
-            ZStack {
-                // 同一条路径剪两段：前半段是从底边中点往左绕到顶边中点，
-                // 后半段是从顶边中点经右侧回到底边中点。两段各取靠近起点的那 half，
-                // 看上去就是从底边中点往两边对称生长。
-                PillOutline()
-                    .trim(from: 0, to: half)
-                    .stroke(Theme.accent, style: Self.stroke)
-                PillOutline()
-                    .trim(from: 1 - half, to: 1)
-                    .stroke(Theme.accent, style: Self.stroke)
-            }
-            .shadow(color: Theme.accent.opacity(0.6), radius: 4, y: 0)
-            .frame(width: rect.width, height: rect.height)
-            .position(x: rect.midX, y: rect.midY)
+            // 进度为 0 时藏起来：零长度的路径配圆头线帽会在底边留一个点，
+            // 细条在 0 时是 0 宽什么都看不见，这里保持一致。用透明度而不是 if，
+            // 视图身份不变，trim 的动画才连得上。
+            ring(half: half)
+                .opacity(half > 0 ? 1 : 0)
+                .shadow(color: Theme.accent.opacity(0.6), radius: 4, y: 0)
+                .frame(width: rect.width, height: rect.height)
+                .position(x: rect.midX, y: rect.midY)
         }
         .loadingProgressFade(progress: progress, isLoading: isLoading)
+    }
+
+    private func ring(half: Double) -> some View {
+        ZStack {
+            // 同一条路径剪两段：前半段是从底边中点往左绕到顶边中点，
+            // 后半段是从顶边中点经右侧回到底边中点。两段各取靠近起点的那 half，
+            // 看上去就是从底边中点往两边对称生长。
+            PillOutline()
+                .trim(from: 0, to: half)
+                .stroke(Theme.accent, style: Self.stroke)
+            PillOutline()
+                .trim(from: 1 - half, to: 1)
+                .stroke(Theme.accent, style: Self.stroke)
+        }
     }
 
     private static let stroke = StrokeStyle(lineWidth: IslandRing.lineWidth, lineCap: .round)
