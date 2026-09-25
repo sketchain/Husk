@@ -17,8 +17,8 @@ final class WebSession {
     var canGoForward: Bool = false
     /// 拦下外链交给 Safari 时给一个短暂提示
     var handoffNotice: String?
-    /// 加载失败的说明；成功后清空
-    var loadError: String?
+    /// 加载失败的说明；成功后清空。开了代理的 profile 会说清是代理还是站点的问题
+    var loadError: LoadFailure?
 
     /// window.open 弹出的那个 WebView（用 WebKit 递来的 configuration 建的，见 WebCoordinator）
     var popup: PopupSession?

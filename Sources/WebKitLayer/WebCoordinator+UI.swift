@@ -32,7 +32,13 @@ extension WebCoordinator: WKUIDelegate {
         // **站点自己流程的一部分**（授权、支付、打印预览），它和 opener 有绑定关系。
         // 所以弹窗一律留在站内的模态里，关掉就回原页。
 
-        WebViewFactory.applyConfigurationExtras(to: configuration, handler: messageProxy)
+        // 开了代理的 profile：偏好和内容规则理应随 configuration 抄过来，但这是 WebKit 的实现细节，
+        // 再设一遍是幂等的，不押它
+        let proxied = ProxyManager.shared.isProxied(session.site.profile)
+        if proxied {
+            ProxyHardening.apply(to: configuration, ruleList: ProxyManager.shared.dnsPrefetchRuleList)
+        }
+        WebViewFactory.applyConfigurationExtras(to: configuration, handler: messageProxy, proxied: proxied)
         let popup = WKWebView(frame: .zero, configuration: configuration)
         WebViewFactory.decorate(popup, site: session.site)
         popup.navigationDelegate = self

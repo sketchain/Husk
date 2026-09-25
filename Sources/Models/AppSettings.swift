@@ -135,14 +135,24 @@ struct HuskLibrary: Codable, Sendable {
     var exportedAt: Date
     var sites: [Site]
     var settings: AppSettings
+    /// profile 名 → 代理配置（不含密码，密码在 Keychain）。
+    /// 挂在库这一层而不是 `settings` 里：它跟着 profile 走，profile 又是站点上的字段，
+    /// 导入站点时要跟着一起进来，不该受「导入时一并覆盖全局设置」那个开关管。
+    var profileProxies: [String: ProfileProxy]
 
     static let currentFormatVersion = 1
 
-    init(sites: [Site], settings: AppSettings, exportedAt: Date = Date()) {
+    init(
+        sites: [Site],
+        settings: AppSettings,
+        profileProxies: [String: ProfileProxy] = [:],
+        exportedAt: Date = Date()
+    ) {
         self.formatVersion = HuskLibrary.currentFormatVersion
         self.exportedAt = exportedAt
         self.sites = sites
         self.settings = settings
+        self.profileProxies = profileProxies
     }
 
     init(from decoder: any Decoder) throws {
@@ -152,6 +162,9 @@ struct HuskLibrary: Codable, Sendable {
         // 单个站点解码失败不应该让整个导入失败
         sites = (try c.decodeIfPresent([FailableSite].self, forKey: .sites) ?? []).compactMap(\.value)
         settings = try c.decodeIfPresent(AppSettings.self, forKey: .settings) ?? AppSettings()
+        // 旧版本的库没有这个字段 = 没配过代理。`ProfileProxy` 自己的 decode 每个字段都兜底，
+        // 所以这里不会因为某一条坏了就整张表丢掉（那等于把所有 profile 静默变成直连）。
+        profileProxies = try c.decodeIfPresent([String: ProfileProxy].self, forKey: .profileProxies) ?? [:]
     }
 }
 

@@ -45,7 +45,16 @@ final class IconStore {
         guard !fetching.contains(site.id) else { return }
         fetching.insert(site.id)
         Task { [weak self] in
-            let outcome = await IconFetcher.fetch(for: site, allowGoogleFallback: settings.allowGoogleFaviconFallback)
+            // 开了代理但代理没就绪时拿到的是 nil：这次就不抓，绝不拿 URLSession.shared 直连凑合
+            let session = await ProxyManager.shared.urlSession(forProfile: site.profile)
+            var outcome: IconFetcher.Outcome?
+            if let session {
+                outcome = await IconFetcher.fetch(
+                    for: site,
+                    allowGoogleFallback: settings.allowGoogleFaviconFallback,
+                    session: session
+                )
+            }
             guard let self else { return }
             if let outcome {
                 try? outcome.pngData.write(to: AppPaths.cachedIcon(for: site.id), options: [.atomic])

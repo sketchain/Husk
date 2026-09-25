@@ -59,5 +59,11 @@ struct RootView: View {
         .onAppIntentExecution(OpenSiteIntent.self) { intent in
             router.open(siteID: intent.site.id, store: store, animated: false)
         }
+        // 有 profile 开了代理的话，先把 DNS 预取拦截规则编好。不预热也能用（浏览页会等它），
+        // 预热了进站点时就少转一下圈。
+        .task {
+            guard store.profileProxies.values.contains(where: \.isEnabled) else { return }
+            await ProxyManager.shared.ensureRuleList()
+        }
     }
 }

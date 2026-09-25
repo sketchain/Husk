@@ -23,12 +23,15 @@ enum IconFetcher {
         let source: String
     }
 
-    static func fetch(for site: Site, allowGoogleFallback: Bool) async -> Outcome? {
+    /// - Parameter session: 站点所在 profile 开了代理时，是走同一个代理的 session（见
+    ///   `ProxyManager.urlSession(forProfile:)`）；没开就是 `.shared`。图标请求会暴露
+    ///   "这台设备对这个站点感兴趣"和真实 IP，开了代理的站点不能让它直连出去。
+    static func fetch(for site: Site, allowGoogleFallback: Bool, session: URLSession) async -> Outcome? {
         var tried = Set<URL>()
 
-        for candidate in await htmlDeclaredIcons(for: site.url) {
+        for candidate in await htmlDeclaredIcons(for: site.url, session: session) {
             guard tried.insert(candidate).inserted else { continue }
-            if let png = await loadPNG(from: candidate) {
+            if let png = await loadPNG(from: candidate, session: session) {
                 return Outcome(pngData: png, source: "apple-touch-icon")
             }
         }
@@ -41,7 +44,7 @@ enum IconFetcher {
         ]
         for candidate in conventional {
             guard tried.insert(candidate).inserted else { continue }
-            if let png = await loadPNG(from: candidate) {
+            if let png = await loadPNG(from: candidate, session: session) {
                 return Outcome(pngData: png, source: candidate.lastPathComponent)
             }
         }
@@ -49,7 +52,7 @@ enum IconFetcher {
         // 最后才走 Google：这一步会把域名告诉 Google，所以做成可关
         if allowGoogleFallback, let host = Site.normalizedHost(of: site.url),
            let google = URL(string: "https://www.google.com/s2/favicons?sz=128&domain=\(host)"),
-           let png = await loadPNG(from: google) {
+           let png = await loadPNG(from: google, session: session) {
             return Outcome(pngData: png, source: "Google favicon")
         }
 
@@ -59,8 +62,8 @@ enum IconFetcher {
     // MARK: - HTML
 
     /// 抓首页 HTML，翻出 `<link rel="apple-touch-icon">`，按 sizes 从大到小排。
-    private static func htmlDeclaredIcons(for url: URL) async -> [URL] {
-        guard let html = await fetchHTMLPrefix(url) else { return [] }
+    private static func htmlDeclaredIcons(for url: URL, session: URLSession) async -> [URL] {
+        guard let html = await fetchHTMLPrefix(url, session: session) else { return [] }
         let pattern = "<link[^>]+>"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
 
@@ -96,11 +99,11 @@ enum IconFetcher {
     }
 
     /// 只读前 256KB：图标声明都在 <head> 里，整页拉下来纯属浪费
-    private static func fetchHTMLPrefix(_ url: URL, limit: Int = 256 * 1024) async -> String? {
+    private static func fetchHTMLPrefix(_ url: URL, session: URLSession, limit: Int = 256 * 1024) async -> String? {
         var request = URLRequest(url: url)
         request.timeoutInterval = 8
         request.setValue(UserAgentPreset.iPhoneSafari.value, forHTTPHeaderField: "User-Agent")
-        guard let (bytes, response) = try? await URLSession.shared.bytes(for: request) else { return nil }
+        guard let (bytes, response) = try? await session.bytes(for: request) else { return nil }
         guard (response as? HTTPURLResponse).map({ (200..<400).contains($0.statusCode) }) ?? false else { return nil }
 
         var data = Data()
@@ -118,11 +121,11 @@ enum IconFetcher {
 
     // MARK: - 图片
 
-    private static func loadPNG(from url: URL) async -> Data? {
+    private static func loadPNG(from url: URL, session: URLSession) async -> Data? {
         var request = URLRequest(url: url)
         request.timeoutInterval = 8
         request.setValue(UserAgentPreset.iPhoneSafari.value, forHTTPHeaderField: "User-Agent")
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
+        guard let (data, response) = try? await session.data(for: request),
               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
               !data.isEmpty
         else { return nil }

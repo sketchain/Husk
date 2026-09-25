@@ -163,7 +163,32 @@ extension WebCoordinator: WKNavigationDelegate {
         let nsError = error as NSError
         // -999 是"这次导航被新的导航取代了"，不是错误，别拿它弹脸
         guard nsError.code != NSURLErrorCancelled else { return }
-        session.loadError = nsError.localizedDescription
+        session.loadError = ProxyManager.shared.describeLoadFailure(error, profile: session.site.profile)
+    }
+
+    /// 代理认证。
+    ///
+    /// 正常情况下凭据已经通过 `ProxyConfiguration.applyCredential` 给了 WebKit，这里不会被调到。
+    /// 但 `applyCredential` 在 WKWebView 下有过"不生效"的报告（Apple 论坛 734679，
+    /// DTS 确认是 bug r. 113346270），所以代理回 407 时这里再按同一份凭据答一次，算第二条腿。
+    ///
+    /// 开了代理的 profile **绝不**走默认处理：默认处理在真机上会弹系统的"需要代理认证"框，
+    /// 用户在里面填什么都和 Husk 的设置对不上。答不上就取消，页面报错。
+    func webView(
+        _ webView: WKWebView,
+        respondTo challenge: URLAuthenticationChallenge
+    ) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+        let space = challenge.protectionSpace
+        let profile = session.site.profile
+        guard space.isProxy(), ProxyManager.shared.isProxied(profile) else {
+            return (.performDefaultHandling, nil)
+        }
+        guard challenge.previousFailureCount == 0,
+              let credential = ProxyManager.shared.proxyCredential(for: profile, host: space.host, port: space.port)
+        else {
+            return (.cancelAuthenticationChallenge, nil)
+        }
+        return (.useCredential, credential)
     }
 }
 

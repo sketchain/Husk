@@ -19,6 +19,15 @@ struct LabView: View {
         @Bindable var bindable = overlay
 
         Form {
+            Section {
+                NavigationLink {
+                    ProxyLabView()
+                } label: {
+                    Label("代理诊断", systemImage: "network.badge.shield.half.filled")
+                }
+            } footer: {
+                Text("在真机上确认「直连代理」能不能跑通、出口 IP 对不对、WebRTC 等泄露口关没关上。")
+            }
             resultSection
             diagnosticsSection
             overlaySection($bindable)
