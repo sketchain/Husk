@@ -16,17 +16,31 @@ enum WebViewFactory {
         configuration.allowsPictureInPictureMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = .audio
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        // 明确不做阅读模式/广告拦截，这里不塞任何内容规则
-        applyConfigurationExtras(to: configuration, handler: handler)
+        // 明确不做阅读模式/广告拦截。唯一的内容规则是开了代理的 profile 拦 DNS 预取用的，
+        // 那是堵泄露，不是拦广告，见 ProxyHardening。
+        let proxied = ProxyManager.shared.isProxied(site.profile)
+        if proxied {
+            ProxyHardening.apply(to: configuration, ruleList: ProxyManager.shared.dnsPrefetchRuleList)
+        }
+        applyConfigurationExtras(to: configuration, handler: handler, proxied: proxied)
         return configuration
     }
 
     /// user script + message handler。弹窗那条路径要单独调这个。
-    static func applyConfigurationExtras(to configuration: WKWebViewConfiguration, handler: any WKScriptMessageHandler) {
+    ///
+    /// `proxied`：开了代理的 profile 还要挂 ProxyHardening 的兜底脚本。
+    /// 弹窗的 configuration 是 WebKit 从开它的页面抄来的，这里 `removeAllUserScripts()`
+    /// 会把抄过来的脚本一起清掉，所以必须在这里重挂，不能指望"继承"。
+    static func applyConfigurationExtras(
+        to configuration: WKWebViewConfiguration,
+        handler: any WKScriptMessageHandler,
+        proxied: Bool
+    ) {
         let controller = configuration.userContentController
         // 防重复：WebKit 递来的 configuration 理论上是干净的，但保险起见
         controller.removeAllUserScripts()
         controller.removeScriptMessageHandler(forName: ContentScripts.messageName)
+        if proxied { ProxyHardening.addScript(to: controller) }
         controller.addUserScript(ContentScripts.backgroundReporter)
         controller.add(handler, name: ContentScripts.messageName)
     }

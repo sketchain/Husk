@@ -25,6 +25,7 @@ struct GlobalSettingsView: View {
             defaultsSection($bindable)
             iconSection($bindable)
             transferSection
+            ProxySettingsEntry()
             storageSection
             aboutSection
             labSection
@@ -156,7 +157,7 @@ struct GlobalSettingsView: View {
         } header: {
             Text("配置")
         } footer: {
-            Text("profile 里的登录状态在沙盒里，删 app 就没了，配置本身导出来至少能留住。")
+            Text("profile 里的登录状态在沙盒里，删 app 就没了，配置本身导出来至少能留住。\n代理的地址、验证方式和指纹会一起导出，**密码不导出**：导入后要密码的代理会报错等你补上，不会改成直连。")
         }
     }
 
@@ -270,6 +271,7 @@ struct GlobalSettingsView: View {
         if result.overwritten > 0 { parts.append("覆盖 \(result.overwritten)") }
         if result.duplicated > 0 { parts.append("副本 \(result.duplicated)") }
         if result.skipped > 0 { parts.append("跳过 \(result.skipped)") }
+        if result.proxiesNeedingPassword > 0 { parts.append("\(result.proxiesNeedingPassword) 个代理要补密码") }
         showNotice(parts.isEmpty ? "没有可导入的站点" : parts.joined(separator: "，"))
     }
 

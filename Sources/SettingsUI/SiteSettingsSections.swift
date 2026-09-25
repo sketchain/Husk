@@ -195,12 +195,15 @@ struct SiteSettingsSections: View {
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
             }
+            // 代理挂在 profile 上，所以放在存储这一组里，紧跟着 profile 的选择
+            ProfileProxyRow(profile: site.profile)
         } header: {
-            Text("存储")
+            Text("存储与网络")
         } footer: {
-            Text(sharesProfile
+            Text((sharesProfile
                  ? "填同一个名字的站点共用 cookie 和本地存储，适合同一家的几个域名。"
                  : "默认每个站点一份独立存储，登录状态互不可见。")
+                 + "\n网络代理跟着 profile 走：共用 profile 的站点也共用同一个代理。")
         }
         .onChange(of: sharesProfile) { _, _ in applyProfile() }
         .onChange(of: profileText) { _, _ in applyProfile() }

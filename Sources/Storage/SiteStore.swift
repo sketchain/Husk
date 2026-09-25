@@ -14,6 +14,8 @@ final class SiteStore {
     static let shared = SiteStore()
 
     private(set) var sites: [Site] = []
+    /// profile → 代理配置。改它走 `setProxy` / `removeProxy`，那两个会通知 `ProxyManager`
+    private(set) var profileProxies: [String: ProfileProxy] = [:]
     var settings: AppSettings = AppSettings() {
         didSet { if settings != oldValue && !isLoading { save() } }
     }
@@ -38,13 +40,14 @@ final class SiteStore {
             let library = try Self.decoder.decode(HuskLibrary.self, from: data)
             sites = library.sites
             settings = library.settings
+            profileProxies = library.profileProxies
         } catch {
             lastError = "配置读取失败：\(error.localizedDescription)"
         }
     }
 
     private func save() {
-        let library = HuskLibrary(sites: sites, settings: settings)
+        let library = HuskLibrary(sites: sites, settings: settings, profileProxies: profileProxies)
         do {
             let data = try Self.encoder.encode(library)
             // .atomic：写临时文件再 rename，中途被杀不会留下半截 JSON
@@ -134,10 +137,33 @@ final class SiteStore {
         Array(Set(sites.map(\.profile) + [Site.adHocProfile]))
     }
 
+    // MARK: - 代理
+
+    /// 保存某个 profile 的代理配置。密码另外存 Keychain，不经过这里。
+    func setProxy(_ proxy: ProfileProxy, for profile: String) {
+        profileProxies[profile] = proxy
+        save()
+        ProxyManager.shared.configurationDidChange(profile: profile)
+    }
+
+    /// 删掉某个 profile 的代理配置，连同 Keychain 里的密码
+    func removeProxy(for profile: String) {
+        profileProxies[profile] = nil
+        ProxyKeychain.removePassword(forProfile: profile)
+        save()
+        ProxyManager.shared.configurationDidChange(profile: profile)
+    }
+
+    /// 用某个 profile 的站点。代理设置页用它告诉用户"改这个会影响谁"。
+    func sites(usingProfile profile: String) -> [Site] {
+        sites.filter { $0.profile == profile }
+    }
+
     // MARK: - 导入导出
 
     func exportData() throws -> Data {
-        try Self.encoder.encode(HuskLibrary(sites: sites, settings: settings))
+        // 密码不在这份数据里（它在 Keychain），导出天然不带密码
+        try Self.encoder.encode(HuskLibrary(sites: sites, settings: settings, profileProxies: profileProxies))
     }
 
     /// 写一份导出 JSON 到临时目录，返回文件 URL（分享面板要的是文件）
@@ -175,6 +201,8 @@ final class SiteStore {
         var overwritten: Int = 0
         var duplicated: Int = 0
         var skipped: Int = 0
+        /// 收下的代理配置里，要密码但本机没存的个数
+        var proxiesNeedingPassword: Int = 0
     }
 
     /// 导入会和已有 id 撞车的站点
@@ -186,6 +214,9 @@ final class SiteStore {
     @discardableResult
     func importLibrary(_ library: HuskLibrary, strategy: ImportStrategy, includeSettings: Bool) -> ImportResult {
         var result = ImportResult()
+        var importedProxies: [String: ProfileProxy] = [:]
+        // 导入前本机已经在用的 profile：非「覆盖」策略下，导入的代理配置不许改它们的走向
+        let localProfiles = Set(sites.map(\.profile))
         for incoming in library.sites {
             if let index = sites.firstIndex(where: { $0.id == incoming.id }) {
                 switch strategy {
@@ -198,7 +229,13 @@ final class SiteStore {
                     var copy = incoming
                     let newID = UUID()
                     // profile 原本等于旧 id 的话，跟着换成新 id，否则副本会和原站共享存储
-                    if copy.profile == copy.id.uuidString { copy.profile = newID.uuidString }
+                    if copy.profile == copy.id.uuidString {
+                        copy.profile = newID.uuidString
+                        // 代理配置跟着副本的新 profile 走，不然副本会悄悄变成不走代理
+                        if let proxy = library.profileProxies[incoming.profile] {
+                            importedProxies[copy.profile] = proxy
+                        }
+                    }
                     copy.id = newID
                     copy.name = incoming.name + " 副本"
                     sites.append(copy)
@@ -212,8 +249,41 @@ final class SiteStore {
             }
         }
         if includeSettings { settings = library.settings }
+        mergeImportedProxies(
+            library.profileProxies,
+            extra: importedProxies,
+            protecting: strategy == .overwrite ? [] : localProfiles,
+            into: &result
+        )
         save()
         refreshShortcuts()
         return result
+    }
+
+    /// 导入的代理配置怎么合并：
+    /// - 本机没人用这个 profile → 直接收下；
+    /// - 本机已经有站点在用它 → 跟着站点的冲突策略走：「覆盖」才动，另外两种一律保留本机现状
+    ///   （包括"本机没配代理"这个现状——不能因为导入了一个文件，本机的站点就突然改走代理了）。
+    ///
+    /// 导出文件里没有密码。收下的配置要是需要密码而本机 Keychain 里没有，这个 profile
+    /// 的页面会报"代理需要密码"而**不是**直连，`ImportResult.proxiesNeedingPassword` 用来提示用户。
+    private func mergeImportedProxies(
+        _ incoming: [String: ProfileProxy],
+        extra: [String: ProfileProxy],
+        protecting localProfiles: Set<String>,
+        into result: inout ImportResult
+    ) {
+        var changed: Set<String> = []
+        for (profile, proxy) in incoming.merging(extra, uniquingKeysWith: { _, new in new }) {
+            if localProfiles.contains(profile) { continue }
+            profileProxies[profile] = proxy
+            changed.insert(profile)
+            if proxy.needsPassword, !ProxyKeychain.hasPassword(forProfile: profile) {
+                result.proxiesNeedingPassword += 1
+            }
+        }
+        for profile in changed {
+            ProxyManager.shared.configurationDidChange(profile: profile)
+        }
     }
 }

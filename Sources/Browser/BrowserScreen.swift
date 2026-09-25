@@ -20,6 +20,11 @@ struct BrowserScreen: View {
     @State private var containerSize: CGSize?
     /// 转屏时序没对齐时的延迟复查。新的一次重算会先取消它。
     @State private var ringRecheck: Task<Void, Never>?
+    /// 这个站点的 profile 开了代理时，代理就绪之前**不建 WebView**，见 `ProxyGate`
+    @State private var proxyGate: ProxyGate
+    /// 代理配置变了就 +1，WebView 跟着拆掉重建（新的 configuration、新的加固、重新加载当前地址）
+    @State private var webViewGeneration = 0
+    @State private var gateTask: Task<Void, Never>?
 
     /// 临时站点不在列表里，配置改不了也存不下
     let canPersist: Bool
@@ -27,6 +32,8 @@ struct BrowserScreen: View {
 
     init(site: Site, canPersist: Bool, onExit: @escaping () -> Void) {
         _session = State(initialValue: WebSession(site: site))
+        // 没开代理、或者代理已经就绪的，第一帧就有 WebView——不为代理多闪一下
+        _proxyGate = State(initialValue: ProxyGate(ProxyManager.shared.readiness(for: site.profile)))
         self.canPersist = canPersist
         self.onExit = onExit
     }
@@ -43,22 +50,39 @@ struct BrowserScreen: View {
                     refreshIslandRing()
                 }
 
-            BrowserWebView(
-                session: session,
-                gestures: store.settings.gestures,
-                onToolbox: { showToolbox = true },
-                onHandoff: { url in
-                    session.notifyHandoff(Site.normalizedHost(of: url) ?? "外部链接")
-                }
-            )
-            // 内容延伸到边缘；键盘避让交给 WebContainerView 里的 keyboardLayoutGuide，
-            // 所以这里连 .keyboard 一起忽略掉，不然两套避让会打架。
-            .ignoresSafeArea()
+            switch proxyGate {
+            case .ready:
+                BrowserWebView(
+                    session: session,
+                    gestures: store.settings.gestures,
+                    onToolbox: { showToolbox = true },
+                    onHandoff: { url in
+                        session.notifyHandoff(Site.normalizedHost(of: url) ?? "外部链接")
+                    }
+                )
+                .id(webViewGeneration)
+                // 内容延伸到边缘；键盘避让交给 WebContainerView 里的 keyboardLayoutGuide，
+                // 所以这里连 .keyboard 一起忽略掉，不然两套避让会打架。
+                .ignoresSafeArea()
 
-            if let error = session.loadError, session.currentURL == nil || session.progress == 0 {
-                failureOverlay(error)
+                if let error = session.loadError, session.currentURL == nil || session.progress == 0 {
+                    failureOverlay(error, retry: { session.reload() })
+                }
+            case .preparing:
+                ProgressView("正在连接代理…")
+                    .tint(Theme.accent)
+            case .failed(let failure):
+                failureOverlay(LoadFailure(failure), retry: rebuildForProxyChange)
             }
         }
+        .task {
+            if proxyGate == .preparing { openGate() }
+        }
+        // 这个 profile 的代理设置改了（或者回前台时中继换了端口），拆掉 WebView 重来
+        .onChange(of: ProxyManager.shared.revision(for: session.site.profile)) { rebuildForProxyChange() }
+        // 站点换了 profile：data store 换了，代理也可能换了，同样重来
+        .onChange(of: session.site.profile) { rebuildForProxyChange() }
+        .onDisappear { gateTask?.cancel() }
         .overlay(alignment: .top) { progressIndicator }
         .overlay(alignment: .bottom) { handoffToast }
         .overlay(alignment: .bottomTrailing) { escapeHatch }
@@ -191,20 +215,75 @@ struct BrowserScreen: View {
         }
     }
 
-    private func failureOverlay(_ error: String) -> some View {
+    // MARK: - 代理
+
+    /// 代理配置变了：先把 WebView 拿掉（`.preparing` 下根本不渲染它），准备好了再用新的
+    /// generation 建一个新的。顺序很重要——先拆后配，旧 WebView 就没有机会按新旧交替的
+    /// 那一瞬间的配置发请求。
+    ///
+    /// 选"自动重建并重载"而不是"提示用户"：代理开关是出口 IP 级别的事，
+    /// 让已经打开的页面继续按旧路走，恰恰是用户改设置时最不想要的。代价是当前页的
+    /// 前进后退历史和没提交的表单会丢，README 里写了。
+    private func rebuildForProxyChange() {
+        session.popup = nil
+        session.loadError = nil
+        proxyGate = .preparing
+        openGate()
+    }
+
+    private func openGate() {
+        gateTask?.cancel()
+        let profile = session.site.profile
+        gateTask = Task {
+            let result = await ProxyManager.shared.prepare(profile: profile)
+            guard !Task.isCancelled else { return }
+            switch result {
+            case .success:
+                webViewGeneration += 1
+                proxyGate = .ready
+            case .failure(let failure):
+                proxyGate = .failed(failure)
+            }
+        }
+    }
+
+    private func failureOverlay(_ failure: LoadFailure, retry: @escaping () -> Void) -> some View {
         ContentUnavailableView {
-            Label("打不开这个页面", systemImage: "wifi.exclamationmark")
+            Label(failure.title, systemImage: failure.symbol)
         } description: {
-            Text(error)
+            Text(failure.message)
         } actions: {
-            HStack(spacing: 12) {
-                Button("重试") { session.reload() }
-                    .buttonStyle(.glassProminent)
-                Button("返回列表", action: onExit)
-                    .buttonStyle(.glass)
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    Button("重试", action: retry)
+                        .buttonStyle(.glassProminent)
+                    Button("返回列表", action: onExit)
+                        .buttonStyle(.glass)
+                }
+                // 开了代理的 profile 出错时给个直达入口：没有 WebView 就没有手势，工具箱唤不出来
+                if ProxyManager.shared.isProxied(session.site.profile) {
+                    ProfileProxyRow(profile: session.site.profile)
+                        .buttonStyle(.glass)
+                        .fixedSize()
+                }
             }
             .tint(Theme.accent)
         }
         .background(Theme.background)
+    }
+}
+
+/// 浏览页和代理之间的闸门
+enum ProxyGate: Equatable {
+    case ready
+    case preparing
+    case failed(ProxyFailure)
+
+    init(_ readiness: ProxyManager.Readiness) {
+        switch readiness {
+        case .ready: self = .ready
+        case .pending: self = .preparing
+        case .failed(let failure): self = .failed(failure)
+        }
     }
 }
