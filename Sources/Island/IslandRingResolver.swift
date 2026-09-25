@@ -7,10 +7,8 @@ struct IslandRingLayout: Equatable, Sendable {
     let pill: CGRect
     /// 描边的**中心线**所在的矩形。stroke 是沿中心线往两边各画半个线宽，
     /// 所以它比胶囊大 `gap + lineWidth / 2`，线的内边缘离胶囊正好 `gap`。
+    /// 圆角不单独存：`PillOutline` 按这个矩形高度的一半画，天然和胶囊同心。
     let strokeRect: CGRect
-
-    /// 和胶囊同心：高度一半，外扩之后依然是胶囊形
-    var cornerRadius: CGFloat { strokeRect.height / 2 }
 
     init(pill: CGRect) {
         self.pill = pill
@@ -56,6 +54,9 @@ enum IslandRingFallback: Equatable, Sendable {
     case noScene
     /// 横屏：`_exclusionArea` 在横屏下的坐标系和岛的位置都没在真机上验证过
     case landscape
+    /// 转屏进行中：视图尺寸已经是竖的，但 scene 的方向或 `UIScreen.bounds` 还没跟上。
+    /// 这时读出来的数不可信，先画细条，调用方过一会儿再查一次。
+    case orientationSettling
     /// `_exclusionArea` 没读到。附带读取卡住的那一步。
     case unreadable(String)
     /// 读到了，但形状不像灵动岛（刘海机、或者私有 API 变了样）。附带哪一条没过。
@@ -67,6 +68,7 @@ enum IslandRingFallback: Equatable, Sendable {
         case .notPhone: "这台设备没有灵动岛"
         case .noScene: "暂时拿不到屏幕信息"
         case .landscape: "横屏下还没验证过"
+        case .orientationSettling: "屏幕方向正在切换"
         case .unreadable: "这台设备读不到灵动岛的位置"
         case .notIslandShaped: "这台设备的屏幕顶部不是灵动岛"
         }
@@ -106,22 +108,49 @@ enum IslandRingAvailability: Equatable, Sendable {
 
 /// 决定进度环能不能画、画在哪。
 ///
-/// **只在这几个时机调**：进浏览页、容器尺寸变化（转屏）、scene 回到前台、切换设置。
-/// 每次调都会读一遍私有 API，所以绝不能挂在 progress 变化上。
+/// **只在这几个时机调**：进浏览页、容器尺寸变化（转屏）、scene 回到前台、切换设置，
+/// 以及转屏时序没对齐时的延迟复查。能走到最后的调用会读一遍私有 API，
+/// 所以绝不能挂在 progress 变化上。
 ///
 /// 读不到就退回细条，**不**用 `IslandEstimate.rect` 那组兜底常数：那是 16 Pro 一台机器
 /// 的实测值，给未知设备画出来很可能是错位的环，比不画更难看。
 @MainActor
 enum IslandRingResolver {
-    static func resolve(in scene: UIWindowScene?) -> IslandRingAvailability {
+    /// - Parameter containerSize: 调用方视图量到的**整窗尺寸**（忽略安全区）。浏览页一定要传：
+    ///   它是判断方向的主要依据，见下。设置页、实验室只要个"这台设备支不支持"的结论，
+    ///   不传，就只看 scene 和 `UIScreen.bounds`。
+    static func resolve(in scene: UIWindowScene?, containerSize: CGSize? = nil) -> IslandRingAvailability {
         guard UIDevice.current.userInterfaceIdiom == .phone else { return .fallback(.notPhone) }
+
+        // 方向以视图自己量到的尺寸为准，scene 的方向和 UIScreen.bounds 只做交叉核对。
+        //
+        // 转屏时这几样东西的更新先后没有文档保证。只信 scene 的话，竖→横那一刻它要是
+        // 晚一步仍报 .portrait，UIScreen.bounds 也还是竖的，那就会照常读 rect、
+        // 在横屏界面上按竖屏坐标画一个环，而且之后不会再有尺寸变化来触发重算。
+        // 视图尺寸是 SwiftUI 真正拿去布局的那个，onGeometryChange 就是被它触发的，
+        // 它说横了就是横了：直接退回细条，连私有 API 都不读。
+        if let size = containerSize, size.width > size.height {
+            return .fallback(.landscape)
+        }
+
         guard let scene else { return .fallback(.noScene) }
 
         // 只认正竖屏。带岛的 iPhone 不支持倒置竖屏（Info.plist 里也没开），
         // 横屏左右两种都没在真机上验证过 `_exclusionArea` 的坐标系，先一律退回。
         // iOS 26 起 scene.interfaceOrientation 废弃，从 effectiveGeometry 读。
-        guard scene.effectiveGeometry.interfaceOrientation == .portrait else {
-            return .fallback(.landscape)
+        // UIScreen.bounds 从 iOS 8 起跟着界面方向转，所以也能拿来核对。
+        let screen = scene.screen.bounds.size
+        let sceneIsPortrait = scene.effectiveGeometry.interfaceOrientation == .portrait
+            && screen.width < screen.height
+
+        if let size = containerSize {
+            // 视图已经是竖的。scene / 屏幕尺寸还没跟上（方向不对，或者宽度对不上——
+            // iPhone 上浏览页的窗口就是整块屏幕），就是转屏还在路上，别读，等调用方复查。
+            guard sceneIsPortrait, abs(screen.width - size.width) <= 1 else {
+                return .fallback(.orientationSettling)
+            }
+        } else {
+            guard sceneIsPortrait else { return .fallback(.landscape) }
         }
 
         let reading = ExclusionAreaReader.read(on: scene.screen)
@@ -129,7 +158,6 @@ enum IslandRingResolver {
             return .fallback(.unreadable(reading.failure ?? "原因不明"))
         }
 
-        let screen = scene.screen.bounds.size
         if let problem = check(rect, screenSize: screen) {
             return .fallback(.notIslandShaped(problem))
         }

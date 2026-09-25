@@ -67,7 +67,4 @@ enum IslandEstimate {
             height: pill.height
         )
     }
-
-    /// 胶囊的圆角就是高度的一半。再大会被 `RoundedRectangle` 夹住，没有区别。
-    static func cornerRadius(forPillHeight height: CGFloat) -> CGFloat { height / 2 }
 }
