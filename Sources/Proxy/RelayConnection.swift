@@ -136,11 +136,12 @@ final class RelayConnection: @unchecked Sendable {
         if let authorization = context.upstream.proxyAuthorization {
             outgoing = outgoing.adding("Proxy-Authorization", authorization)
         }
+        let request = outgoing.serialized + leftover
         let link = UpstreamLink(settings: context.upstream, queue: queue)
         upstream = link
         link.open { result in
             if case .failure(let failure) = result { return self.fail(failure) }
-            link.io.send(outgoing.serialized + leftover) { error in
+            link.io.send(request) { error in
                 if let error {
                     return self.fail(.upstreamProtocolError("转发请求失败：\(error.localizedDescription)"))
                 }

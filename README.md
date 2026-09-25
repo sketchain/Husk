@@ -195,9 +195,9 @@ tab bar 上方有一条 **`tabViewBottomAccessory`**「继续上次」：上次�
 
 上半截固定是：刷新 / 站点首页 / 分享 / 在 Safari 打开、当前 URL（点一下复制）、返回列表。
 
-**站点配置** — 图标（自动抓取 / 相册选图 / 首字母渐变）、缩放 10%–200%、UA（6 个预设 + 自填）、外链行为与档位、手动例外名单、存储 profile。
+**站点配置** — 图标（自动抓取 / 相册选图 / 首字母渐变）、缩放 10%–200%、UA（6 个预设 + 自填）、外链行为与档位、手动例外名单、存储 profile、按 profile 的 HTTPS 代理（见[按 profile 配 HTTPS 代理](#按-profile-配-https-代理)）。
 
-**全局设置** — 浏览时隐藏状态栏、加载进度样式（顶部细条 / 环绕灵动岛）、手势开关、新建站点默认值、图标（Google 回退开关 / 批量存图标）、配置导入导出（JSON）、存储管理（按站点清 / 全部清 / 孤儿清理）。
+**全局设置** — 浏览时隐藏状态栏、加载进度样式（顶部细条 / 环绕灵动岛）、手势开关、新建站点默认值、图标（Google 回退开关 / 批量存图标）、配置导入导出（JSON）、网络代理（按 profile 列出）、存储管理（按站点清 / 全部清 / 孤儿清理）。
 
 设置页最底下压着一条不起眼的**「实验室」**，见下。
 
@@ -324,6 +324,202 @@ y、w、h 全是整像素，唯独居中位置落在 415.5px 这个半像素上�
 
 ---
 
+## 按 profile 配 HTTPS 代理
+
+设置 → **网络代理**，或者站点设置 / 工具箱大档里「存储与网络」那一组的**网络代理**一行。任何 profile（包括临时站点共用的那个，以及几个站点共用的）都可以单独配一个 HTTPS 代理，每个 profile 自己开关，关掉就是直连。
+
+这里的「HTTPS 代理」指 **app 和代理之间走 TLS**，隧道用 HTTP CONNECT（也就是 CONNECT over TLS）。支持用户名密码（`Proxy-Authorization: Basic`）。
+
+### 为什么挂在 profile 上，界面怎么讲清楚
+
+网络走哪条路是 `WKWebsiteDataStore.proxyConfigurations` 决定的，而 data store 是按 profile 一个的（见 `WebsiteDataStoreManager` 的坑 2：一个标识只能有一个实例）。所以**同一个 profile 的站点不可能走不同的代理**，代理只能挂在 profile 上。
+
+profile 原来在界面上只是站点里的一个字符串，这次第一次把它当成一个东西列出来：
+
+- **设置 → 网络代理**按 profile 列。只有一个站点在用的（默认的"一站一个 profile"），直接叫那个站点的名字；几个站点共用的，叫 profile 名，下面列出是哪几个站点；临时站点单独一行。站点删了但配置还在的，归到"没有站点在用的配置"，左滑删除（连同 Keychain 里的密码）。
+- **代理编辑页顶上**先说影响范围：共用 profile 的写"⚠︎ 这 N 个站点共用这个 profile，改了代理它们全都跟着变"，临时站点那一行写"影响所有临时站点"。
+- **站点设置**里代理那一行放在 profile 选择的正下面，分区改名「存储与网络」，脚注再说一遍"共用 profile 的站点也共用同一个代理"。这一行用 sheet 打开编辑页，因为工具箱 sheet 刻意没有 NavigationStack，push 不了。
+
+### 两种连接方式
+
+| | 本地中继（默认） | 直连代理 |
+|---|---|---|
+| 怎么走 | WKWebView → `127.0.0.1:随机端口`（明文，只在回环接口）→ app 里的中继 → TLS → 上游代理 | WKWebView 的网络进程直接 TLS 连上游代理，app 不参与转发 |
+| 实现 | `NWListener` + `NWConnection`，证书校验在 app 进程的 verify block 里 | `ProxyConfiguration(httpCONNECTProxy:tlsOptions:)` |
+| 系统验证 | ✅ | ✅ |
+| 公钥指纹 | ✅ | ❌ WKWebView 不调 verify block |
+| 不验证 | ✅ | ❌ 同上 |
+| 失败原因 | 分得清：连不上 / 握手失败 / 证书不对 / 407 / 代理拒绝 | 只有 WebKit 给的错误码，分不清是代理的证书还是站点的证书 |
+| 依赖 | app 在前台（后台挂起期间中继不工作，见下） | WebKit bug 264307 是否已修（**待真机验证**） |
+
+两种方式**共用同一组地址、端口、用户名、密码、验证方式和指纹**，切换方式不用重填。直连模式下选了指纹或不验证，选项旁边标「（直连不支持）」，下面出一行红字，保存会被拒绝——不偷偷降级成系统验证，也不偷偷改成本地中继。「测试连接」拿到指纹后点「用这个指纹」，会同时把方式切到本地中继。
+
+**新建配置默认用本地中继。** 理由：
+
+1. 三种验证都支持，而自签证书恰恰是自己搭 HTTPS 代理最常见的情况；
+2. 失败原因分得清，用户能看出"代理不通"还是"证书不对"——这是需求里的硬要求，直连模式做不到；
+3. 绕开了 WebKit bug 264307（给 WebKit 的是 `tlsOptions: nil` 的明文本地代理，不涉及 TLS 选项的跨进程序列化）；
+4. 代价是中继跑在 app 进程里，app 被挂起时它也停了。但 Husk 的网页本来就只在前台看，WebView 在后台时同样被挂起，这个代价几乎不可见。
+
+### 查证过的事实（2026-09）
+
+| 问题 | 结论 | 来源 |
+|---|---|---|
+| `proxyConfigurations` 的 TLS verify block 在 WKWebView 下调不调 | **不调**，自签证书直接 -1202。帖子里没有 Apple 回复，没有修复记录 | [Apple 论坛 750644](https://developer.apple.com/forums/thread/750644) |
+| WebKit bug 264307（CONNECT 带 TLS 选项时网络进程崩溃）修没修 | bugs.webkit.org 上状态仍是 **NEW**，无修复提交，内部 rdar://118028072。找不到 iOS 26 上的定论 → 照样实现，标成待真机验证，实验室有专门一项测它 | [bug 264307](https://bugs.webkit.org/show_bug.cgi?id=264307) |
+| `allowFailover` 默认值 | 文档原话 "Failover isn't allowed by default"。代码里照样显式写 `false` | [ProxyConfiguration.allowFailover](https://developer.apple.com/documentation/network/proxyconfiguration/allowfailover) |
+| HTTP CONNECT 代理转不转 UDP | 不转。文档原话 "These HTTP CONNECT proxies only handle TCP connections" | [init(httpCONNECTProxy:tlsOptions:)](https://developer.apple.com/documentation/network/proxyconfiguration/init(httpconnectproxy:tlsoptions:)) |
+| `applyCredential` 在 WKWebView 下能不能用 | **有争议**。2023 年 DTS 在论坛确认是 bug（r. 113346270，FB13350370），真机上会弹系统的"需要代理认证"框；2026 年有开源项目在较新系统上实测凭据确实发出去了。结论：**不能单押它**，见下面的"两条腿" | [论坛 734679](https://developer.apple.com/forums/thread/734679)、[webspace_app #603/#604](https://github.com/theoden8/webspace_app/pull/604) |
+| 本机别的 app 能不能连 127.0.0.1 上的端口 | **能**。iOS 的回环接口全设备共用，沙盒不隔离它（app 和扩展之间拿 localhost 通信就是靠这个）；只是被挂起的 app 连不了。所以本地一跳必须防蹭 | [论坛 712626](https://developer.apple.com/forums/thread/712626)、[论坛 724864](https://developer.apple.com/forums/thread/724864) |
+| 监听端口在后台 | TN2277：挂起期间监听套接字可能被系统回收，且挂起时进来的连接没人处理 → **进后台关监听、回前台重开** | [TN2277](https://developer.apple.com/library/archive/technotes/tn2277/_index.html) |
+| `NWListener` 的 `requiredLocalEndpoint` | 有报告说 listener 会忽略它、照样绑临时端口 → 不靠它，改用 `requiredInterfaceType = .loopback` + `NWListener(using:on:)`，再在接连接时检查对端是不是回环地址（第二道闸） | [dinky #28](https://github.com/heyderekj/dinky/pull/28) |
+| WebKit 绕开代理的泄露口 | 三个：DNS 预取（iOS 26.0 起）、WebAuthn Related Origin 请求（iOS 18.0 起）、WebTransport（iOS 26.4 起）。都不走 `proxyConfigurations` | [Mysk 2026-08-04](https://mysk.blog/2026/08/04/webkit-proxy-icloud-private-relay-ip-leak/) |
+| 代理认证 challenge 的 async 委托方法名 | `webView(_:respondTo:) async -> (AuthChallengeDisposition, URLCredential?)` | [WKNavigationDelegate](https://developer.apple.com/documentation/webkit/wknavigationdelegate/webview(_:didreceive:completionhandler:)) |
+
+### 本地中继
+
+`Sources/Proxy/`：`LocalRelay`（监听）、`RelayConnection`（一条客户端连接）、`UpstreamLink`（到上游的一条 TLS 连接）、`ConnectionIO`（读头、双向对拷）。
+
+**每个 profile 一个监听，不是全 app 共用一个。** 端口本身就标识了 profile，中继不用靠凭据反查"这条连接是谁的"；于是本地凭据只干"防蹭"一件事。万一 `applyCredential` 在某个系统上真坏了，实验室里关掉凭据校验照样能用，不用改架构。十几个监听不过是十几个文件描述符。
+
+**防蹭：本地一跳的随机凭据。** 用户名固定 `husk`，密码每次启动 `SecRandomCopyBytes` 生成 24 字节、只在内存里。比对用常量时间，免得本机别的 app 靠计时一位一位猜。凭据通过**两条腿**交给 WebKit：
+
+1. `ProxyConfiguration.applyCredential`——正常情况下它就够了；
+2. `WKNavigationDelegate.webView(_:respondTo:)`——`applyCredential` 失灵、中继回 407 时，这里按同一份凭据再答一次。开了代理的 profile **绝不**走默认处理（默认处理在真机上会弹系统的认证框，用户在里面填什么都和 Husk 的设置对不上），答不上就取消，页面报错。
+
+两条腿都断了的表现是：页面一直失败，实验室里「认证拒绝」计数一直涨。这时可以临时打开实验室的「本地一跳不校验凭据」，代价是本机别的 app 猜到端口就能借你的代理出网——所以它只存 UserDefaults，不进导出，默认关。
+
+"在监听端校验连接来源"做不到：TCP 回环连接拿不到对端进程，`LOCAL_PEERPID` 只对 Unix 域套接字有效，而 `ProxyConfiguration` 只收 `NWEndpoint.hostPort`。
+
+**CONNECT 和绝对形式都接。** `ProxyConfiguration(httpCONNECTProxy:)` 按名字应该对 `http://` 也开 CONNECT 隧道，但查不到 WKWebView 的明确说法，而同类项目的中继确实收到过绝对形式的请求，所以两种都处理：
+
+- `CONNECT host:port` → 向上游发同样的 CONNECT，2xx 后两边对接成透明隧道；
+- `GET http://host/path HTTP/1.1`（绝对形式）→ 原样转给上游（上游本来就是 HTTP 代理，这是它的本职；不改成 CONNECT 到 80 端口，因为很多代理默认只许 CONNECT 443），换掉 `Proxy-Authorization`，强制 `Connection: close`——一条连接只跑一个请求，中继就不用理解 keep-alive 的分帧。上游回 407 时不原样转给 WebKit（会弹系统认证框），换成 502。
+- 源形式（`GET /path`）说明对方把中继当成了普通服务器，回 400。
+
+对拷是"写完一段再读下一段"，天然有背压；一边读到 EOF 就向另一边半关闭，两边都结束才关。
+
+**进后台 / 回前台。** 按 TN2277：`didEnterBackground` 时记下端口、关掉监听；`willEnterForeground` 时**先试原端口**。拿回原端口的话 `proxyConfigurations` 一个字都不用改，页面无感（Apple 文档说改代理配置会打断进行中的请求，所以能不改就不改）。原端口被占了就换一个新端口、更新 `proxyConfigurations`，并让这个 profile 开着的页面重建。已经建好的隧道不动（数据连接，TN2277 允许留着，被回收了自己会报错断开）。监听关着的那段时间里 WebView 发出的请求会连接失败——是失败，不是直连。
+
+同一个 profile 同时有几处要起中继（浏览页、保存设置、图标抓取、回前台）时合并成一次，否则后一次会把前一次正在起的监听顶掉。
+
+### 代理证书的三种验证
+
+| 方式 | 做什么 | 适合 |
+|---|---|---|
+| 系统验证 | `SecPolicyCreateSSL(true, 代理主机名)` + `SecTrustEvaluateWithError`：系统信任链 + 主机名 | 代理用的是正经 CA 签的证书 |
+| 公钥指纹 | 叶子证书 **SPKI 的 SHA-256** 命中列表里任意一个即通过，不看信任链和主机名 | 自签证书 |
+| 不验证 | 什么证书都收 | 只在排查时临时用，界面上有橙色警告 |
+
+**为什么是 SPKI 的 SHA-256，而不是整张证书的 SHA-256：**
+
+- 续签时只要密钥不变，SPKI 指纹就不变；整张证书的指纹**每次续签都变**（有效期、序列号都在里面）。代理证书一年一续甚至三个月一续，按整张证书比对等于每次续签都要回来改配置，忘了就是全站打不开。
+- 这是 RFC 7469（HPKP）和 curl `--pinnedpubkey` 选的写法，`sha256//<base64>` 大家都认得，自己搭代理的人手边的工具能直接算出来。
+- SPKI 是从证书 DER 里原样切出来的（`CertificateFingerprint.subjectPublicKeyInfo`），不用 `SecKeyCopyExternalRepresentation`——后者给的是裸公钥（RSA 是 PKCS#1、EC 是 X9.63 点），得按密钥类型自己补 ASN.1 头，漏一种类型就算错一种。
+
+**支持多个指纹**，命中任意一个即通过：换密钥时新旧两个都填上，服务器换完再删旧的，中间不断。
+
+**只比叶子证书，不比链上的其他证书。** 指纹模式不验证签名链，如果"链上任意一张命中就放行"，攻击者把公开的中间证书塞进自己出示的链里就骗过去了。
+
+填写格式：`sha256/` 开头的 base64（`sha256//` 也认），或者 64 位十六进制（冒号、空格可有可无）。存的时候统一规范化成 base64。
+
+**「测试连接」**用的是和中继完全相同的代码（`UpstreamLink`）：TCP → TLS → 按所选方式验证 → 发一次 `CONNECT www.apple.com:443`（只建隧道不发数据）。结果里有证书主体、系统信任链是否通过（三种模式都会算一遍）、**公钥指纹**（点按复制，或者「用这个指纹」直接填进去）、整张证书的 SHA-256（只供和浏览器 / openssl 核对，不拿来比对）、CONNECT 的响应。指纹模式下一个指纹都还没填时也允许测——测的目的之一就是拿到指纹。直连模式下它只能说明"代理本身是好的"，WebKit 那条路能不能通去实验室测。
+
+### 失败时的行为
+
+**开了代理的 profile，任何环节失败都是报错，没有任何代码路径会回落成直连：**
+
+- 代理就绪之前**不建 WebView**。浏览页先问 `ProxyManager.readiness`：没开代理、或者代理已经就绪（直连模式配置已落到 store 上 / 中继已在监听）的，第一帧照常有 WebView，和以前一样不闪；要等中继起来的，先显示"正在连接代理…"；配置不完整、缺密码、中继起不来的，直接显示失败界面。
+- `allowFailover = false` 显式写上。
+- 中继里根本没有直连的代码：上游连不上、握手失败、证书不对、407、代理拒绝，统统回 502（带 `X-Husk-Proxy-Error` 头）并关连接。
+- 密码缺了（典型场景：刚从别的设备导入）不是"那就不认证"，而是报"代理需要密码"。
+- 图标抓取拿不到走代理的 session 时**不抓**，不拿 `URLSession.shared` 凑合。
+
+失败界面复用原来那个，标题和图标按原因分：
+
+| 标题 | 什么时候 |
+|---|---|
+| 代理配置不完整 | 没地址、端口不对、指纹模式没填指纹、直连选了不支持的验证、缺密码 |
+| 代理连不上 | DNS、拒绝连接、超时、TLS 握手失败、代理回非 2xx、中继起不来 |
+| 代理的证书没通过验证 | 系统验证不过（附系统给的原因）、指纹不匹配（附代理实际出示的指纹） |
+| 代理拒绝了用户名或密码 | 上游回 407 |
+| 站点的证书没通过验证 | 本地中继模式下中继没报错、页面却报证书错——那就是站点自己的证书（或者代理在中间换了证书） |
+
+本地中继模式下靠"中继最近 20 秒报过什么错"来判断是不是代理的锅；直连模式下 WebKit 只给错误码，证书类错误会同时点出"代理或站点"两种可能，并建议换本地中继。失败界面在开了代理的 profile 上多一个「网络代理」按钮直达设置——没有 WebView 就没有手势，工具箱唤不出来。
+
+### 改了代理配置后，已经打开的页面
+
+**自动拆掉 WebView、重建、重新加载当前地址**，不提示。
+
+代理开关是出口 IP 级别的事：刚把代理打开，已经打开的页面却还在按旧路发请求，恰恰是用户最不想要的；而 Apple 文档说改 `proxyConfigurations` 本来就会打断进行中的请求，页面状态本来也保不住。重建而不只是 reload，是因为 WebRTC / WebTransport 的关闭是在 configuration 上做的，只有新建的 WebView 才吃得到。
+
+顺序是**先拆后配**：`configurationDidChange` 先 bump 版本号，浏览页立刻进入"准备中"、不再渲染旧 WebView，然后才准备新配置。代价：当前页的前进后退历史、没提交的表单会丢；弹窗会被关掉。站点换了 profile（存储那一组里改的）也走同一条路。
+
+### 会绕开代理的东西，以及怎么堵
+
+| 泄露 | 为什么绕开 | 怎么堵 | 可靠程度 |
+|---|---|---|---|
+| **WebRTC** | ICE 用 UDP 问 STUN，HTTP CONNECT 代理只转 TCP，出去的就是真实 IP | 私有偏好 `-[WKPreferences _setPeerConnectionEnabled:]` = NO；再用脚本删掉 `RTCPeerConnection` | 私有开关是主力；实验室能看到它关没关上 |
+| **WebTransport**（iOS 26.4 起） | WebKit 自己拼 QUIC 连接，不带会话的代理设置 | `+[WKPreferences _features]` 里 `WebTransportEnabled` 那项 `_setEnabled:forFeature:` 关掉；脚本删构造器 | 同上 |
+| **DNS 预取**（iOS 26.0 起） | `<link rel=dns-prefetch>` 让网络进程直接调系统解析 | 内容规则拦 `ping` 类型的资源——对着 WebKit 源码确认过，`FrameLoader::prefetchDNSIfNeeded` 在发 DNS 预取前会按 `ResourceType::Ping` 过一遍内容规则 | **待真机验证**：iOS 26 自带的 WebKit 里有没有这段检查没法从外面确认 |
+| **通行密钥 Related Origin 请求** | 系统凭据服务自己去取 `/.well-known/webauthn`，不在 WebKit 的会话里 | 没有私有开关可用，只能脚本把 `navigator.credentials.get/create` 拒掉、删 `PublicKeyCredential` | **尽力而为**：页面刻意绕（比如从新建的 iframe 里拿干净的原型）挡不住 |
+
+以上**只对开了代理的 profile 生效**，没开代理的 profile 一样都不碰。副作用：开了代理的 profile 里视频通话、通行密钥登录不可用；`ping` 规则顺带拦掉 `navigator.sendBeacon` 和 `<a ping>`（本来就走代理，拦掉只是统计打点发不出去）。
+
+私有 API 的用法和灵动岛那套一样：每一步先 `responds(to:)`，不在就原地放弃。两个开关都没了的话，脚本那一层还在。
+
+### app 自己发出的请求
+
+**图标抓取跟着站点所在 profile 走代理。** 图标请求会把"这台设备对这个站点感兴趣"连同真实 IP 告诉站点（和 Google favicon 服务），对开了代理的站点来说这就是泄露。实现：`ProxyManager.urlSession(forProfile:)` 给一个 `URLSessionConfiguration.proxyConfigurations` 和 WebView 完全相同的 session；没开代理的站点照旧 `URLSession.shared`；开了代理但没就绪时返回 nil，这次就不抓。
+
+其他 app 侧请求：快捷指令、App Intents、存相册都不联网；实验室「出口 IP 对比」的第一行是**刻意**直连的（要拿真实 IP 做对比），按钮下面写明了。
+
+### 密码与导入导出
+
+- 密码存 Keychain（`kSecClassGenericPassword`，service `Husk.proxy`，account 是 profile 名），`AfterFirstUnlockThisDeviceOnly`：锁屏时被快捷指令唤起也能读；不进 iCloud 钥匙串、不随备份迁移。
+- 代理的地址、端口、用户名、连接方式、验证方式、指纹放在库文件顶层的 `profileProxies`（profile 名 → 配置），**照常进导出**。放顶层而不是 `settings` 里：它跟着 profile 走，导入站点时要一起进来，不该受「导入时一并覆盖全局设置」那个开关管。
+- **导出不带密码，不询问。** 导出文件是明文 JSON，会被发到各种地方；"导出前问一句"的结果多半是顺手点了"包含"。代价是换设备要重填密码——导入后要密码的 profile 会报"代理需要密码"（不是直连），导入结果的提示里会写"N 个代理要补密码"。
+- 旧配置 / 旧导出文件里没有 `profileProxies` → 按"没配代理"处理（`decodeIfPresent` + 默认 `[:]`）。
+- **条目存在但某个字段坏了**，不能让它消失（那等于静默改成直连）：`ProfileProxy` 每个字段单独兜底，`isEnabled` 缺省为 true，认不出的验证方式按最严格的系统验证，地址缺了会在加载时报"配置不完整"。
+- 导入合并：本机没人用的 profile，导入的代理配置直接收下；本机已经有站点在用的 profile，只有选了「覆盖已有」才动，另外两种一律保留本机现状（包括"本机没配代理"这个现状）。「都留着（新建副本）」时副本换了新 profile，代理配置跟着搬过去，不然副本会悄悄不走代理。
+
+### 实验室 → 代理诊断
+
+给真机验证用：
+
+1. **直连模式实测**：拿所选 profile 的地址和认证，临时拼一个 `ProxyConfiguration(httpCONNECTProxy:, tlsOptions: 默认)` 给一次性的 data store，用真 WKWebView 加载一次。结果是成功、失败（错误连同 underlying 链原样展开）、还是超时——网络进程崩溃（bug 264307）的典型表现就是超时或者 `NSURLErrorNetworkConnectionLost`，配合 Console 里 `com.apple.WebKit.Networking` 的日志看。
+2. **出口 IP 对比**：app 直连问一次，再用这个 profile 的真 data store 在**同一个 WebView 里连续导航两次**。第二次专门查"第一次走代理、后面的导航走直连"这种有人报告过的问题（[webspace_app #609](https://github.com/theoden8/webspace_app/pull/609)，Flutter 封装，不确定是不是它自己的问题）。
+3. **中继状态**：端口、隧道数、认证拒绝数、失败数、最近一次上游错误。
+4. **加固是否生效**：WebRTC / WebTransport 的私有开关关没关上、DNS 预取规则编没编好。
+5. 「本地一跳不校验凭据」开关（见上）和一键复制诊断结果。
+
+### 已知限制
+
+- **app 在后台时本地中继不工作。** 后台里 WebView 发出的请求会失败（不是直连）。回前台自动恢复。
+- **直连代理模式只能系统验证**，而且分不清是代理的证书还是站点的证书出了问题。
+- **通行密钥的泄露只能尽力而为**，挡不住刻意绕的页面；介意的话别在开了代理的 profile 里用通行密钥。
+- **开了代理的 profile 里 WebRTC 用不了**（视频会议、网页版语音）。这是有意的，没做"允许 WebRTC"的开关——HTTP CONNECT 代理根本转不了 UDP，允许就等于泄露。
+- **改代理配置会重建已打开的页面**，前进后退历史和未提交的表单会丢。
+- **本地一跳是明文**，只在回环接口上跑。本机别的 app 在前台时理论上能嗅探到端口号，但没有凭据用不了；能读 app 内存的恶意软件本来就不在防御范围里。
+- 上游代理只支持 **HTTP/1.1 CONNECT over TLS**，不支持 HTTP/2 / HTTP/3 的 CONNECT，也不支持 SOCKS。
+- 代理地址只填主机名或 IP，不带 scheme 和路径。IPv6 地址直接填（不带方括号）。
+
+### 需要真机验证的
+
+没有 Xcode 也没有设备，下面这些只做到了"CI 编译通过、逻辑按文档写"：
+
+- [ ] **直连模式在 iOS 26 上能不能跑通**（bug 264307）——实验室「直连模式实测」
+- [ ] **`applyCredential` 对本地中继生效没有**——正常浏览时实验室里「认证拒绝」不涨就是生效了；涨了但页面能开，说明是 `respondTo` 那条腿在答；两条都不行就只能临时关凭据校验
+- [ ] **WKWebView 访问 `http://` 时走 CONNECT 还是绝对形式**——两种都实现了，但哪种真被用到没测过
+- [ ] **出口 IP**：两次导航都是代理 IP——实验室「出口 IP 对比」
+- [ ] **WebRTC / WebTransport 的私有开关在 iOS 26 上还在、还管用**——实验室「状态」；再用 browserleaks.com/webrtc 这类页面交叉验证
+- [ ] **DNS 预取拦截**：iOS 26 自带的 WebKit 有没有 `prefetchDNSIfNeeded` 里那段内容规则检查——需要抓 DNS 包
+- [ ] **回前台拿回原端口**的成功率，以及拿不回时页面重建的体验
+- [ ] **图标抓取经本地中继**：URLSession 对 `127.0.0.1` 明文代理会不会被 ATS 拦（按理 ATS 管的是目标站点，不是代理这一跳）
+- [ ] **`requiredInterfaceType = .loopback` 的监听**用 `127.0.0.1` 能不能连上（有可能只绑了 `::1`）
+
+---
+
 ## 不闪首页是怎么做到的
 
 原来的症状：从快捷指令用 `husk://open?id=…` 打开，总能看见约 0.3 秒首页再进网页；
@@ -444,15 +640,16 @@ setter 一路直通 `WebPageProxy::setPageZoomFactor` → `LocalFrame::setPageAn
 Sources/
   App/          入口、根视图、AppDelegate（冷启动 URL）、路由、husk:// 解析
   Models/       Site / AppSettings / UA 预设 / 外链档位 / PSL / 缩放档位表
-  Storage/      JSON 持久化、WKWebsiteDataStore 多 profile 管理
+  Storage/      JSON 持久化、WKWebsiteDataStore 多 profile 管理、代理密码的 Keychain
   Icons/        图标抓取、ICO 拆包、首字母占位图、主屏图标导出、存相册
   Intents/      AppEntity、「打开站点」intent、AppShortcutsProvider
   WebKitLayer/  WKWebView 装配、导航策略、弹窗、手势
   Browser/      浏览界面、进度条 / 灵动岛进度环、工具箱 sheet
   Home/         TabView、站点网格、"继续上次"
-  SettingsUI/   站点设置、共用的本站设置分区、全局设置、存储管理
+  SettingsUI/   站点设置、共用的本站设置分区、全局设置、存储管理、代理设置
   Island/       灵动岛几何：`_exclusionArea` 安全读取、实测公式、进度环判定（浏览页和实验室共用）
-  Lab/          实验室：灵动岛诊断页、描边叠加窗口
+  Proxy/        按 profile 的 HTTPS 代理：本地中继、上游 TLS 与证书指纹、泄露加固、ProxyManager
+  Lab/          实验室：灵动岛诊断页、描边叠加窗口、代理诊断
   Util/         主题、玻璃提示条、分享面板
 Resources/
   public_suffix_list.dat
@@ -663,6 +860,7 @@ scheme 一律返回 false，那张表上限 50 条还得预先知道要查哪些
 - **`ScrollView` 里的空状态不是垂直居中的**，`ContentUnavailableView` 顶着上边留了一段内边距。
 - **外链判断不是安全边界**，只决定"这个链接在哪儿打开"。
 - **灵动岛进度环不跟着实时活动变形。** 别的 app 的实时活动把岛撑宽时，环还绕着原来那颗胶囊，会被盖住一部分。app 拿不到岛的当前形态，见[进度环](#进度环环绕灵动岛)。
+- **开了代理的 profile：app 在后台时本地中继不工作、WebRTC 和通行密钥不可用、改代理配置会重建已打开的页面。** 详见[按 profile 配 HTTPS 代理](#按-profile-配-https-代理)的「已知限制」和「需要真机验证的」。
 - **灵动岛进度环横屏下退回细条**，横屏的坐标系还没在真机上验证。几何公式（外扩 1pt、重新居中）也只在 iPhone 16 Pro / iOS 26.6.2 上实测过。
 
 ## 明确不做
