@@ -41,7 +41,7 @@ struct ProfileProxyEditor: View {
             } footer: {
                 Text(draft.isEnabled
                      ? "开着时，代理连不上、握手失败或证书不对都会直接报错，不会改用直连。"
-                     : "关着就是直连，下面的设置都保留，下次打开不用重填。")
+                     : "关掉就是直连。已经填好的地址和验证设置会留着，下次打开不用重填。")
             }
             if draft.isEnabled {
                 modeSection
@@ -63,6 +63,8 @@ struct ProfileProxyEditor: View {
         }
         .navigationTitle("代理")
         .navigationBarTitleDisplayMode(.inline)
+        // 草稿制：push 进来时也只留「取消 / 保存」，免得返回键让人以为改动已经生效
+        .navigationBarBackButtonHidden(true)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("取消") { dismiss() }

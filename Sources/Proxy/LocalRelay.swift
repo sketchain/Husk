@@ -39,6 +39,8 @@ final class LocalRelay: @unchecked Sendable {
     private var listener: NWListener?
     private var generation = 0
     private var pendingStart: (@Sendable (Result<UInt16, ProxyFailure>) -> Void)?
+    /// 活着的连接。配置变了要全部断开，见 `dropAllConnections`
+    private var active: [ObjectIdentifier: RelayConnection] = [:]
 
     init(
         profile: String,
@@ -59,11 +61,24 @@ final class LocalRelay: @unchecked Sendable {
     var upstream: UpstreamSettings { lock.withLock { upstreamValue } }
     var requiresAuth: Bool { lock.withLock { requireAuthValue } }
 
-    /// 换上游配置：只影响之后的新连接，已经建好的隧道继续用旧的，直到页面重载把它们换掉
+    /// 换上游配置：只影响之后的新连接。已经建好的隧道要靠 `dropAllConnections` 断掉。
     func update(upstream: UpstreamSettings, requireAuth: Bool) {
         lock.withLock {
             upstreamValue = upstream
             requireAuthValue = requireAuth
+        }
+    }
+
+    /// 断开所有已经建立的隧道。
+    ///
+    /// 代理配置变了（换了指纹、换了密码、换了上游）时必须做：WebKit 网络进程会复用它到
+    /// 中继的长连接，而那些隧道是按**旧**配置验证过的上游建的。比如用户因为旧密钥泄露而删掉
+    /// 一个指纹，不断开的话旧隧道还会继续跑。
+    func dropAllConnections() {
+        queue.async {
+            let connections = Array(self.active.values)
+            self.active.removeAll()
+            connections.forEach { $0.terminate() }
         }
     }
 
@@ -166,7 +181,14 @@ final class LocalRelay: @unchecked Sendable {
         let context = RelayContext(upstream: upstream, expectedAuthorization: expected) { event in
             self.record(event)
         }
-        RelayConnection(client: client, context: context, queue: queue).start()
+        let connection = RelayConnection(client: client, context: context, queue: queue)
+        let key = ObjectIdentifier(connection)
+        active[key] = connection
+        connection.onClose = {
+            // close() 总是在 queue 上跑（所有回调都派在这个队列），这里直接改是安全的
+            self.active[key] = nil
+        }
+        connection.start()
     }
 
     private func record(_ event: RelayEvent) {

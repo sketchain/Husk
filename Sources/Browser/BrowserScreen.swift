@@ -80,8 +80,12 @@ struct BrowserScreen: View {
         }
         // 这个 profile 的代理设置改了（或者回前台时中继换了端口），拆掉 WebView 重来
         .onChange(of: ProxyManager.shared.revision(for: session.site.profile)) { rebuildForProxyChange() }
-        // 站点换了 profile：data store 换了，代理也可能换了，同样重来
-        .onChange(of: session.site.profile) { rebuildForProxyChange() }
+        // 站点换了 profile，而新旧两边有一边开了代理：出口变了，同样重来。
+        // 两边都没开代理时不动——profile 名是在输入框里逐字改的，每敲一个字重建一次 WebView 受不了，
+        // 那种情况维持以前的行为（下次进站点才换 store）。
+        .onChange(of: session.site.profile) { old, new in
+            if ProxyManager.shared.isProxied(old) || ProxyManager.shared.isProxied(new) { rebuildForProxyChange() }
+        }
         .onDisappear { gateTask?.cancel() }
         .overlay(alignment: .top) { progressIndicator }
         .overlay(alignment: .bottom) { handoffToast }

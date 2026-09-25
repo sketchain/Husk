@@ -100,7 +100,7 @@ final class ProxyManager {
         }
         switch config.mode {
         case .direct:
-            relays.removeValue(forKey: profile)?.stop()
+            retireRelay(profile)
             applyDirect(profile, settings: settings)
             return .ready
         case .localRelay:
@@ -200,11 +200,18 @@ final class ProxyManager {
 
     /// 撤掉代理：只有这次启动里设过才动 store
     private func withdraw(_ profile: String) {
-        relays.removeValue(forKey: profile)?.stop()
+        retireRelay(profile)
         guard applied[profile] != nil else { return }
         WebsiteDataStoreManager.shared.dataStore(forProfile: profile).proxyConfigurations = []
         applied[profile] = nil
         urlSessions[profile] = nil
+    }
+
+    /// 这个 profile 不再用本地中继了：停监听，已有隧道也断掉
+    private func retireRelay(_ profile: String) {
+        guard let relay = relays.removeValue(forKey: profile) else { return }
+        relay.dropAllConnections()
+        relay.stop()
     }
 
     // MARK: - 配置变了
@@ -216,8 +223,10 @@ final class ProxyManager {
         failures[profile] = nil
         urlSessions[profile] = nil
         if config(for: profile)?.mode != .localRelay {
-            relays.removeValue(forKey: profile)?.stop()
+            retireRelay(profile)
         }
+        // 按旧配置建好的隧道一律断开，别让 WebKit 复用它们
+        relays[profile]?.dropAllConnections()
         if case .pending = readiness(for: profile) {
             Task { _ = await prepare(profile: profile) }
         }

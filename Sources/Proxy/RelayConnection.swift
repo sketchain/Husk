@@ -36,12 +36,17 @@ final class RelayConnection: @unchecked Sendable {
     private var upstream: UpstreamLink?
     private var closed = false
     private var endedDirections = 0
+    /// 关掉时通知中继把自己从"活着的连接"里摘掉
+    var onClose: (@Sendable () -> Void)?
 
     init(client: ConnectionIO, context: RelayContext, queue: DispatchQueue) {
         self.client = client
         self.context = context
         self.queue = queue
     }
+
+    /// 中继要求立刻断开（配置变了）。必须在 `queue` 上调。
+    func terminate() { close() }
 
     func start() {
         client.connection.stateUpdateHandler = { state in
@@ -199,6 +204,8 @@ final class RelayConnection: @unchecked Sendable {
         closed = true
         client.cancel()
         upstream?.cancel()
+        onClose?()
+        onClose = nil
     }
 
     /// 比较凭据时不因为前缀对上了就早退，免得本机别的 app 靠计时一位一位猜
