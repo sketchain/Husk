@@ -16,6 +16,10 @@ struct BrowserScreen: View {
     /// 灵动岛进度环的几何。nil = 设置里选的是细条。
     /// 只在进页面、尺寸变化（转屏）、回前台、改设置时重算，见 `refreshIslandRing()`。
     @State private var islandRing: IslandRingAvailability?
+    /// 整窗尺寸（忽略安全区和键盘）。进度环判断方向的主要依据。
+    @State private var containerSize: CGSize?
+    /// 转屏时序没对齐时的延迟复查。新的一次重算会先取消它。
+    @State private var ringRecheck: Task<Void, Never>?
 
     /// 临时站点不在列表里，配置改不了也存不下
     let canPersist: Bool
@@ -35,7 +39,8 @@ struct BrowserScreen: View {
                 // 免得每次弹键盘都去读一遍私有 API。onGeometryChange 首次也会回调一次，
                 // 进页面时的那次计算就靠它。
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
-                    refreshIslandRing(containerSize: size)
+                    containerSize = size
+                    refreshIslandRing()
                 }
 
             BrowserWebView(
@@ -78,6 +83,7 @@ struct BrowserScreen: View {
             if phase == .active { refreshIslandRing() }
         }
         .onChange(of: store.settings.progressStyle) { refreshIslandRing() }
+        .onDisappear { ringRecheck?.cancel() }
         // 站点在别处被改了（比如设置 tab），把新配置同步进当前会话
         .onChange(of: store.sites) { _, sites in
             guard canPersist, let updated = sites.first(where: { $0.id == session.site.id }) else { return }
@@ -116,25 +122,43 @@ struct BrowserScreen: View {
         showToolbox && toolboxDetent == .large
     }
 
-    /// 重算进度环几何。**会读一次私有 API**，所以只挂在进页面 / 尺寸变化 / 回前台 /
-    /// 改设置这几个时机上，绝不跟着 progress 走。
-    private func refreshIslandRing(containerSize: CGSize? = nil) {
+    /// 重算进度环几何。只挂在进页面 / 尺寸变化 / 回前台 / 改设置这几个时机上，
+    /// 绝不跟着 progress 走——走到最后会读一次私有 API。
+    private func refreshIslandRing() {
+        ringRecheck?.cancel()
+        ringRecheck = nil
         guard store.settings.progressStyle == .islandRing else {
             islandRing = nil
             return
         }
-        let result = IslandRingResolver.resolve(in: ExclusionAreaReader.activeScene)
+        applyIslandRing(recheckAttempt: 0)
+    }
+
+    /// 算一次，赋值；要是转屏还没落定（视图已经竖了，scene / 屏幕尺寸还没跟上），
+    /// 先画细条，隔一会儿再查，最多查 `ringRecheckLimit` 次。
+    ///
+    /// 方向判断以 `containerSize` 为主，见 `IslandRingResolver.resolve`：视图一横过来
+    /// 就直接退回细条，不存在"横屏下留着一个按竖屏坐标画的环"。对不上的只剩
+    /// "视图竖了、scene 还横着"这一种，它不会画错，只会晚一点画上，所以用延迟复查兜住；
+    /// 查满次数还对不上就一直是细条，也是安全的那一边。
+    private func applyIslandRing(recheckAttempt attempt: Int) {
+        let result = IslandRingResolver.resolve(
+            in: ExclusionAreaReader.activeScene,
+            containerSize: containerSize
+        )
         islandRing = result
 
-        // 从横屏转回竖屏的那一刻，万一 scene 的方向比视图尺寸晚一步更新，
-        // 这一次会误判成横屏而一直退回细条。尺寸已经是竖的时候，等转屏动画走完再确认一次。
-        if let size = containerSize, size.height > size.width, result == .fallback(.landscape) {
-            Task {
-                try? await Task.sleep(for: .milliseconds(400))
-                refreshIslandRing()
-            }
+        guard result == .fallback(.orientationSettling), attempt < Self.ringRecheckLimit else { return }
+        ringRecheck = Task {
+            // 取消（新的一次重算、或离开页面）时 sleep 直接抛 CancellationError，就此作罢
+            do { try await Task.sleep(for: Self.ringRecheckDelay) } catch { return }
+            applyIslandRing(recheckAttempt: attempt + 1)
         }
     }
+
+    /// 转屏动画大约 0.3–0.4 秒。300ms × 5 次，足够盖住一次转屏
+    private static let ringRecheckDelay = Duration.milliseconds(300)
+    private static let ringRecheckLimit = 5
 
     // MARK: - 覆盖层
 
