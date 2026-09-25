@@ -22,7 +22,7 @@ struct HTTPHead: Sendable {
         var lines = text.components(separatedBy: "\r\n")
         while lines.last?.isEmpty == true { lines.removeLast() }
         guard let first = lines.first, !first.isEmpty else { return nil }
-        var headers: [(String, String)] = []
+        var headers: [(name: String, value: String)] = []
         for line in lines.dropFirst() {
             guard let colon = line.firstIndex(of: ":") else { return nil }
             let name = String(line[..<colon]).trimmingCharacters(in: .whitespaces)
