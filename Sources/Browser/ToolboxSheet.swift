@@ -25,19 +25,24 @@ struct ToolboxSheet: View {
     /// 由浏览页持有：拉到大档时浏览页要把灵动岛进度环藏起来，见 `BrowserScreen`
     @Binding var detent: PresentationDetent
     @State private var copied = false
+    @State private var addressText = ""
+    @State private var addressError: String?
+    @FocusState private var addressFocused: Bool
 
     var body: some View {
         Form {
-            headerSection
             actionSection
-            urlSection
-            librarySection
+            navigationSection
             if canPersist {
                 SiteSettingsSections(site: siteBinding, commit: { store.update(session.site) })
             } else {
                 adHocSection
             }
         }
+        // 段间距收紧、顶部留白去掉：半屏档要一直露出完整的缩放滑块，
+        // 不然它只露半截，想拖还得先把 sheet 往上拉
+        .listSectionSpacing(.compact)
+        .contentMargins(.top, 14, for: .scrollContent)
         .presentationDetents([.medium, .large], selection: $detent)
         .presentationDragIndicator(.visible)
         // 半屏档下网页还能继续滚、继续点
@@ -50,40 +55,35 @@ struct ToolboxSheet: View {
         Binding(get: { session.site }, set: { session.site = $0 })
     }
 
-    // MARK: - 头部
+    // MARK: - 头部 + 动作
 
-    private var headerSection: some View {
-        Section {
-            VStack(spacing: 3) {
-                Text(session.pageTitle?.isEmpty == false ? session.pageTitle! : session.site.name)
-                    .font(.headline)
-                    .lineLimit(1)
-                Text(session.site.displayHost)
-                    .font(.caption)
-                    .foregroundStyle(Theme.secondaryText)
-            }
-            .frame(maxWidth: .infinity)
-            .listRowBackground(Color.clear)
-        }
-    }
-
-    // MARK: - 动作
-
+    /// 标题和四个按钮放进同一个 section：原来各占一组，光是组间距和标题行就吃掉了
+    /// 小半个半屏档。
     private var actionSection: some View {
         Section {
-            // 几块玻璃挨在一起要装进同一个容器里：玻璃不该去采样玻璃，
-            // 容器会把它们当成一整块来算折射。
-            GlassEffectContainer(spacing: 14) {
-                HStack(spacing: 10) {
-                    toolButton("刷新", "arrow.clockwise") { session.reload(); dismiss() }
-                    toolButton("站点首页", "house") { session.goHome(); dismiss() }
-                    shareButton
-                    toolButton("Safari", "safari") { session.openInSafari(); dismiss() }
+            VStack(spacing: 10) {
+                VStack(spacing: 1) {
+                    Text(session.pageTitle?.isEmpty == false ? session.pageTitle! : session.site.name)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    Text(session.site.displayHost)
+                        .font(.caption2)
+                        .foregroundStyle(Theme.secondaryText)
+                }
+                // 几块玻璃挨在一起要装进同一个容器里：玻璃不该去采样玻璃，
+                // 容器会把它们当成一整块来算折射。
+                GlassEffectContainer(spacing: 14) {
+                    HStack(spacing: 10) {
+                        toolButton("刷新", "arrow.clockwise") { session.reload(); dismiss() }
+                        toolButton("站点首页", "house") { session.goHome(); dismiss() }
+                        shareButton
+                        toolButton("Safari", "safari") { session.openInSafari(); dismiss() }
+                    }
                 }
             }
             .frame(maxWidth: .infinity)
             .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
+            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 4, trailing: 8))
         }
     }
 
@@ -105,10 +105,10 @@ struct ToolboxSheet: View {
     }
 
     private func toolLabel(_ title: String, _ symbol: String) -> some View {
-        VStack(spacing: 7) {
+        VStack(spacing: 5) {
             Image(systemName: symbol)
-                .font(.system(size: 19, weight: .medium))
-                .frame(width: 52, height: 52)
+                .font(.system(size: 17, weight: .medium))
+                .frame(width: 44, height: 44)
                 .glassEffect(.regular.interactive(), in: .circle)
             Text(title)
                 .font(.caption2)
@@ -117,41 +117,99 @@ struct ToolboxSheet: View {
         .contentShape(Rectangle())
     }
 
-    // MARK: - 当前地址
+    // MARK: - 地址栏 + 返回列表
 
-    private var urlSection: some View {
+    /// 地址栏和"返回列表"同组两行，省一份组间距。
+    private var navigationSection: some View {
         Section {
-            Button {
-                session.copyCurrentURL()
-                Haptics.success()
-                withAnimation { copied = true }
-                Task {
-                    try? await Task.sleep(for: .seconds(1.6))
-                    withAnimation { copied = false }
-                }
-            } label: {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 10) {
-                    Image(systemName: copied ? "checkmark.circle.fill" : "link")
-                        .foregroundStyle(copied ? .green : Theme.secondaryText)
-                    Text(copied ? "已复制" : session.shareURL.absoluteString)
+                    Image(systemName: "link")
+                        .foregroundStyle(Theme.secondaryText)
+                    TextField("地址，或以 / 开头的站内路径", text: $addressText)
                         .font(.footnote)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 0)
+                        .keyboardType(.URL)
+                        .textContentType(.URL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .submitLabel(.go)
+                        .focused($addressFocused)
+                        .onSubmit(submitAddress)
+                    if addressFocused {
+                        if !addressText.isEmpty {
+                            Button {
+                                addressText = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(Theme.secondaryText)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("清空")
+                        }
+                    } else {
+                        copyButton
+                    }
+                }
+                if let addressError {
+                    Text(addressError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
             }
-            .buttonStyle(.plain)
-        }
-    }
+            .onAppear { addressText = session.shareURL.absoluteString }
+            // 页面自己跳转了就跟上；正在编辑时不抢用户的输入
+            .onChange(of: session.shareURL) { _, url in
+                if !addressFocused { addressText = url.absoluteString }
+            }
+            .onChange(of: addressFocused) { _, focused in
+                // 没提交就退出编辑：还原成当前地址，别留一个看起来像已生效的半截地址。
+                // 提交失败时例外——留着那串字和报错，方便接着改
+                if !focused, addressError == nil { addressText = session.shareURL.absoluteString }
+            }
+            .onChange(of: addressText) { _, _ in addressError = nil }
 
-    private var librarySection: some View {
-        Section {
             Button {
                 dismiss()
                 onExitToLibrary()
             } label: {
                 Label("返回列表", systemImage: "square.grid.2x2")
             }
+        } footer: {
+            if addressFocused {
+                Text("外站地址按本站的外链规则判定，该交给 Safari 的照样交给 Safari。")
+            }
+        }
+    }
+
+    private var copyButton: some View {
+        Button {
+            session.copyCurrentURL()
+            Haptics.success()
+            withAnimation { copied = true }
+            Task {
+                try? await Task.sleep(for: .seconds(1.6))
+                withAnimation { copied = false }
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc")
+                .foregroundStyle(copied ? .green : Theme.secondaryText)
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel(copied ? "已复制" : "复制地址")
+    }
+
+    private func submitAddress() {
+        switch session.navigate(to: addressText) {
+        case .loading, .handedOff:
+            Haptics.tap()
+            addressFocused = false
+            dismiss()
+        case .invalid:
+            Haptics.warning()
+            addressError = "不像是个地址"
+            // onSubmit 会收起键盘，留在输入框里方便直接改
+            addressFocused = true
         }
     }
 

@@ -93,14 +93,16 @@ struct GlobalSettingsView: View {
                         .monospacedDigit()
                         .foregroundStyle(Theme.secondaryText)
                 }
-                Slider(
-                    value: Binding(
+                StopSlider(
+                    index: Binding(
                         get: { ZoomScale.index(for: store.settings.newSiteDefaults.zoom) },
                         set: { store.settings.newSiteDefaults.zoom = ZoomScale.zoom(atIndex: $0) }
                     ),
-                    in: ZoomScale.indexRange,
-                    step: 1
+                    count: ZoomScale.stops.count,
+                    marker: ZoomScale.defaultIndex
                 )
+                .accessibilityLabel("缩放")
+                .accessibilityValue(ZoomScale.percentText(store.settings.newSiteDefaults.zoom))
             }
             Picker("外链", selection: bindable.settings.newSiteDefaults.externalLinkPolicy) {
                 ForEach(ExternalLinkPolicy.allCases) { Text($0.title).tag($0) }
