@@ -47,6 +47,41 @@ final class WebSession {
         webView?.load(URLRequest(url: site.url))
     }
 
+    /// 地址栏提交的结果，决定工具箱要不要收起来
+    enum AddressOutcome: Equatable {
+        /// 在当前窗口里开始加载了
+        case loading
+        /// 按外链规则交给了 Safari / 别的 app
+        case handedOff
+        /// 不像个地址
+        case invalid
+    }
+
+    /// 地址栏手动输入。外链判定和点链接走同一个 `Site.destination(for:)`，
+    /// 手敲的地址不享受特权——不然"强制 Safari"名单在地址栏这里就漏了。
+    func navigate(to input: String) -> AddressOutcome {
+        guard let url = AddressInput.resolve(input, relativeTo: shareURL) else { return .invalid }
+
+        let scheme = url.scheme?.lowercased()
+        guard scheme == "http" || scheme == "https" else {
+            Task { [weak self] in
+                let opened = await UIApplication.shared.open(url)
+                if !opened { self?.notify("没有 app 能打开这个链接") }
+            }
+            return .handedOff
+        }
+
+        if site.destination(for: url) == .safari {
+            UIApplication.shared.open(url)
+            notifyHandoff(Site.normalizedHost(of: url) ?? "外部链接")
+            return .handedOff
+        }
+
+        guard let webView else { return .invalid }
+        webView.load(URLRequest(url: url))
+        return .loading
+    }
+
     func goBack() { webView?.goBack() }
     func goForward() { webView?.goForward() }
 

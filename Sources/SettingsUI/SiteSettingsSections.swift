@@ -53,7 +53,7 @@ struct SiteSettingsSections: View {
 
     private var zoomSection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Label("缩放", systemImage: "textformat.size")
                     Spacer()
@@ -67,25 +67,30 @@ struct SiteSettingsSections: View {
                 }
                 HStack(spacing: 10) {
                     Text("10%").font(.caption2).foregroundStyle(Theme.secondaryText)
-                    Slider(
-                        value: Binding(
+                    StopSlider(
+                        index: Binding(
                             get: { ZoomScale.index(for: site.zoom) },
                             set: { setZoom(ZoomScale.zoom(atIndex: $0)) }
                         ),
-                        in: ZoomScale.indexRange,
-                        step: 1,
+                        count: ZoomScale.stops.count,
+                        marker: ZoomScale.defaultIndex,
                         onEditingChanged: { editing in if !editing { commit() } }
                     )
+                    .accessibilityLabel("缩放")
+                    .accessibilityValue(ZoomScale.percentText(site.zoom))
                     Text("200%").font(.caption2).foregroundStyle(Theme.secondaryText)
                 }
             }
         } footer: {
-            Text("走 WKWebView 的 pageZoom，等价于给整页加 CSS zoom，不是改 viewport。滑块走的是档位表，所以一定停得到 100%。")
+            Text("走 WKWebView 的 pageZoom，等价于给整页加 CSS zoom，不是改 viewport。滑块走的是档位表，整条轨道都能按，点哪跳哪，一定停得到 100%。")
         }
     }
 
     private func setZoom(_ value: Double) {
-        site.zoom = value.clamped(to: Site.zoomRange)
+        let clamped = value.clamped(to: Site.zoomRange)
+        // 拖动时每过一格才会走到这里，但同值也别写：写一次就是一轮 updateUIView
+        guard site.zoom != clamped else { return }
+        site.zoom = clamped
     }
 
     // MARK: - UA

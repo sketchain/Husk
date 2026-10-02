@@ -14,10 +14,11 @@ enum ZoomScale {
         1.10, 1.25, 1.40, 1.50, 1.75, 2.00,
     ]
 
-    static var indexRange: ClosedRange<Double> { 0...Double(stops.count - 1) }
+    /// 100% 那一格，滑块上会标一个点
+    static let defaultIndex = stops.firstIndex(of: 1.0) ?? 0
 
     /// 任意 zoom → 最近的一格。老配置里 0.85 这种表外的值也能落到滑块上。
-    static func index(for zoom: Double) -> Double {
+    static func index(for zoom: Double) -> Int {
         let value = zoom.clamped(to: Site.zoomRange)
         var best = 0
         var bestDelta = Double.greatestFiniteMagnitude
@@ -28,12 +29,11 @@ enum ZoomScale {
                 best = i
             }
         }
-        return Double(best)
+        return best
     }
 
-    static func zoom(atIndex index: Double) -> Double {
-        let i = Int(index.rounded()).clamped(to: 0...(stops.count - 1))
-        return stops[i]
+    static func zoom(atIndex index: Int) -> Double {
+        stops[index.clamped(to: 0...(stops.count - 1))]
     }
 
     static func percentText(_ zoom: Double) -> String {
