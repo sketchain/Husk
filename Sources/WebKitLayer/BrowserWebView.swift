@@ -3,7 +3,7 @@ import WebKit
 
 /// WKWebView 的 SwiftUI 桥接。
 ///
-/// 为什么不用 iOS 26 的 SwiftUI `WebView`/`WebPage`：本项目要自定义 UA、`pageZoom`、
+/// 为什么不用 iOS 26 的 SwiftUI `WebView`/`WebPage`：本项目要自定义 UA、注入缩放脚本、
 /// 拦截外链导航、接管 `window.open`，这四件事在 `WKWebView` 上是确定可用的老接口，
 /// 换到新 API 上映射关系不明确，不值得拿核心功能去赌。
 struct BrowserWebView: UIViewRepresentable {
@@ -30,7 +30,8 @@ struct BrowserWebView: UIViewRepresentable {
         coordinator.gestureInstaller = installer
         coordinator.appliedGestures = gestures
         coordinator.appliedUserAgent = .some(session.site.userAgent)
-        coordinator.appliedZoom = nil   // 等 didFinish 再设，见 WebViewFactory.applyZoom 的注释
+        // 缩放已经烤进 configuration 里的 documentStart 脚本了，见 ZoomScript
+        coordinator.appliedZoom = session.site.zoom
 
         session.webView = webView
         webView.load(URLRequest(url: session.url(for: session.site)))
@@ -54,7 +55,7 @@ struct BrowserWebView: UIViewRepresentable {
         // 缩放：滑块拖动时 session.site.zoom 一直在变，这里跟着刷
         if coordinator.appliedZoom != session.site.zoom {
             coordinator.appliedZoom = session.site.zoom
-            WebViewFactory.applyZoom(session.site.zoom, to: webView)
+            WebViewFactory.applyZoom(session.site.zoom, to: webView, site: session.site)
         }
 
         if coordinator.appliedGestures != gestures {

@@ -145,9 +145,8 @@ extension WebCoordinator: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // 缩放在这里设——didFinish 之前设会被这次导航重置
-        WebViewFactory.applyZoom(session.site.zoom, to: webView)
-        appliedZoom = session.site.zoom
+        // 正常导航由 documentStart 脚本带着缩放值；这里只给往返缓存恢复的页面补一刀
+        WebViewFactory.refreshZoom(session.site.zoom, in: webView)
         session.loadError = nil
     }
 

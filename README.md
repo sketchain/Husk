@@ -623,10 +623,23 @@ AppDelegate 和 App Intents 都够不着 SwiftUI 的 `@State`。
 
 ## 缩放：10%–200%
 
-下限从 50% 拉到 10%。**`WKWebView.pageZoom` 自己不做任何钳位**——
-setter 一路直通 `WebPageProxy::setPageZoomFactor` → `LocalFrame::setPageAndTextZoomFactors`，
-中间没有 clamp（对着 WebKit 源码确认过）。所以范围完全由 app 说了算；
-下限留着是因为 0 会把缩放换算里的除法搞炸。
+下限从 50% 拉到 10%（WebKit 的 viewport 缩放下限就是 0.1），再低没意义。
+
+**实现是改 viewport，不是 `WKWebView.pageZoom`。** 早期版本用 pageZoom，它在 iOS 上只把排好的版面
+按比例画小 / 画大，**布局宽度不变**：缩到 50% 整页只占左半屏、右边一片空；放大则版面比屏幕宽、
+出横向滚动条。再加上缩小后 iOS 的文字自动放大（text autosizing）把字号往上提、而站点写死的行高不跟，
+上下两行字会叠在一起。
+
+现在 `WebKitLayer/ZoomScript.swift` 在 documentStart 注入一段脚本，把页面的 viewport 原地改写成
+`width = 原布局宽 ÷ 缩放, initial-scale = 屏宽 ÷ 新布局宽`——和 iOS 渲染桌面版网页是同一条路，
+版面按新宽度重排，永远正好一屏宽。缩小时顺带 `-webkit-text-size-adjust: 100%` 关掉文字自动放大。
+
+- 原布局宽：`width=device-width` 取屏宽，写了固定宽度按那个算，没写 viewport 按 iOS 默认的 980
+- 保留页面的 `user-scalable=no` 和 `viewport-fit`；页面之后自己改 viewport（单页应用常见），以新值为准重新换算
+- 回到 100% 时原样还原，等于没装这个脚本
+- 拖滑块时 Swift 调 `__huskSetZoom` 实时改当前页，同时重装脚本，之后的导航带新值；
+  `didFinish` 再补一刀，照顾从往返缓存恢复、没重跑脚本的页面
+- 弹窗不跟缩放（以前也不跟）
 
 线性滑块在这个范围里不好使：10%–100% 要占掉滑轨的 47%，而日常真正会调的
 90%–125% 挤在中间几个像素里，想停在 100% 基本靠运气。所以**滑块绑的是一张档位表的下标**
@@ -688,10 +701,9 @@ Resources/
 | `fetchAllDataStoreIdentifiers` 查存在性做孤儿清理，不能拿 `init(forIdentifier:)` 试探 | 同上 |
 | `createWebViewWith` 必须用 WebKit 递来的 configuration，否则 `window.opener` 变 null | `WebKitLayer/WebCoordinator+UI.swift` |
 | 那个 configuration 没走初始化路径，user script / message handler 要重挂 | `WebKitLayer/WebViewFactory.swift` |
-| `pageZoom` 要在 `didFinish` 之后设，太早会被导航重置 | 同上 |
 | `customUserAgent` 改完要 `reload()` 才对当前页生效 | `WebKitLayer/BrowserWebView.swift` |
 | 深色白闪：`isOpaque = false` + 深色 `backgroundColor` | `WebKitLayer/WebViewFactory.swift` |
-| **`pageZoom` 的 setter 一路不做钳位**，直通 `WebPageProxy::setPageZoomFactor` → `LocalFrame::setPageAndTextZoomFactors`，范围由 app 自己定 | `Models/Site.swift` |
+| **iOS 上的 `pageZoom` 不重排版面**：布局宽度不变只是画小 / 画大，缩小后只占半屏、放大出横向滚动条 → 缩放改走 viewport 改写 | `WebKitLayer/ZoomScript.swift` |
 | **delegate 要用 async 变体**：iOS 18 起 WebKit 给 completion handler 加了 `@MainActor`，旧签名只"近似匹配"，编译器仅给 warning 而运行时**根本不调用** | `WebKitLayer/WebCoordinator.swift` |
 
 另外补了几个文档里不显眼的：
@@ -860,7 +872,7 @@ scheme 一律返回 false，那张表上限 50 条还得预先知道要查哪些
 - **PSL 里的国际化域名是 Unicode 形式，而 `URL.host()` 给的是 Punycode**，两边对不上时那个 IDN 站点会退回"最后一段是公共后缀"。中文域名之类的站点如果判得不对，同样用手动例外压。
 - **`.ico` 里只装老式 BMP 子图的站点抓不到图标**，会往下退到 Google 服务或首字母图。写个 BMP 解码器不值当。
 - **`http://` 站点的图标抓不到** —— ATS 只对 WebView 内容放开了明文，app 侧的 URLSession 还是强制 HTTPS。这是有意的取舍。
-- **`pageZoom` 是整页缩放**，等价于 CSS `zoom`。用固定像素布局的站点放大后可能出横向滚动条，这是这个 API 的性质，不是 bug。
+- **缩放靠改写页面的 viewport**。站点脚本要是反复强行把 viewport 写回去，会和我们来回改；目前没遇到这样的站。缩放后双指捏合的下限就是当前缩放。
 - **存储占用只报"有几个域名留了数据"，不报字节数** —— `WKWebsiteDataRecord` 根本不提供大小。
 - **临时站点（`husk://open?url=`）共用一个 profile**，彼此之间不隔离。
 - **iPad 上现在能开多个窗口了**，但那不是设计意图：`UIApplicationSupportsMultipleScenes` 是 App Intents 的 scene 派发要求的（见上文）。所有窗口共用同一个 `Router`，所以多开出来的窗口内容是一样的。

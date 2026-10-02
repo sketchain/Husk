@@ -82,7 +82,7 @@ struct SiteSettingsSections: View {
                 }
             }
         } footer: {
-            Text("走 WKWebView 的 pageZoom，等价于给整页加 CSS zoom，不是改 viewport。滑块走的是档位表，整条轨道都能按，点哪跳哪，一定停得到 100%。")
+            Text("按缩放比例改页面的布局宽度，版面重排后正好一屏宽，不会缩成半屏。滑块走的是档位表，整条轨道都能按，点哪跳哪，一定停得到 100%。")
         }
     }
 
