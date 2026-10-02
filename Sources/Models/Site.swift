@@ -9,7 +9,7 @@ struct Site: Identifiable, Codable, Hashable, Sendable {
     var id: UUID
     var name: String
     var url: URL
-    /// WKWebView.pageZoom，范围见 `Site.zoomRange`
+    /// 页面缩放（改写 viewport 实现，见 `ZoomScript`），范围见 `Site.zoomRange`
     var zoom: Double
     /// nil = 系统默认 UA
     var userAgent: String?
@@ -25,11 +25,8 @@ struct Site: Identifiable, Codable, Hashable, Sendable {
     var iconSource: IconSource
     var createdAt: Date
 
-    /// 下限 10%：给"整页塞进一屏看个大概"留出余地。
-    /// `WKWebView.pageZoom` 自己**不做任何钳位**（setter 一路直通
-    /// `WebPageProxy::setPageZoomFactor` → `LocalFrame::setPageAndTextZoomFactors`，
-    /// 中间没有 clamp），所以范围完全由我们说了算；不设下限的话 0 会把
-    /// 缩放换算里的除法搞炸，该有的保护还是得留在这边。
+    /// 下限 10%：给"整页塞进一屏看个大概"留出余地，也正好是 WebKit viewport 缩放的下限。
+    /// 不设下限的话 0 会把布局宽度的换算（屏宽 ÷ 缩放）搞炸。
     static let zoomRange: ClosedRange<Double> = 0.1...2.0
 
     init(

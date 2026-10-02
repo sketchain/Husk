@@ -22,7 +22,7 @@ enum WebViewFactory {
         if proxied {
             ProxyHardening.apply(to: configuration, ruleList: ProxyManager.shared.dnsPrefetchRuleList)
         }
-        applyConfigurationExtras(to: configuration, handler: handler, proxied: proxied)
+        applyConfigurationExtras(to: configuration, handler: handler, proxied: proxied, zoom: site.zoom)
         return configuration
     }
 
@@ -31,18 +31,27 @@ enum WebViewFactory {
     /// `proxied`：开了代理的 profile 还要挂 ProxyHardening 的兜底脚本。
     /// 弹窗的 configuration 是 WebKit 从开它的页面抄来的，这里 `removeAllUserScripts()`
     /// 会把抄过来的脚本一起清掉，所以必须在这里重挂，不能指望"继承"。
+    /// `zoom`：弹窗不跟站点缩放走（以前用 pageZoom 时也没跟），默认 1 就是不动 viewport。
     static func applyConfigurationExtras(
         to configuration: WKWebViewConfiguration,
         handler: any WKScriptMessageHandler,
-        proxied: Bool
+        proxied: Bool,
+        zoom: Double = 1
     ) {
         let controller = configuration.userContentController
+        controller.removeScriptMessageHandler(forName: ContentScripts.messageName)
+        installUserScripts(on: controller, proxied: proxied, zoom: zoom)
+        controller.add(handler, name: ContentScripts.messageName)
+    }
+
+    /// 全部 user script 一次装齐。缩放值是烤进脚本里的，改缩放就得整套重装——
+    /// `WKUserContentController` 没有"只删一条脚本"的接口。
+    private static func installUserScripts(on controller: WKUserContentController, proxied: Bool, zoom: Double) {
         // 防重复：WebKit 递来的 configuration 理论上是干净的，但保险起见
         controller.removeAllUserScripts()
-        controller.removeScriptMessageHandler(forName: ContentScripts.messageName)
         if proxied { ProxyHardening.addScript(to: controller) }
         controller.addUserScript(ContentScripts.backgroundReporter)
-        controller.add(handler, name: ContentScripts.messageName)
+        controller.addUserScript(ZoomScript.userScript(zoom: zoom))
     }
 
     /// WebView 本身（非 configuration）层面的设置。弹窗也要走一遍。
@@ -63,13 +72,28 @@ enum WebViewFactory {
         webView.scrollView.keyboardDismissMode = .interactive
     }
 
-    /// pageZoom 要在 didFinish 之后设：设太早会被这次导航重置掉。
-    /// 它等价于给整页加 CSS zoom，别拿注入 JS 改 viewport 那套来替代。
-    static func applyZoom(_ zoom: Double, to webView: WKWebView) {
-        let clamped = CGFloat(zoom.clamped(to: Site.zoomRange))
-        if abs(webView.pageZoom - clamped) > 0.001 {
-            webView.pageZoom = clamped
-        }
+    /// 缩放改了：当前页实时换算 viewport，并重装脚本让之后的导航也用新值。
+    /// 实现见 `ZoomScript`——**不再用 `pageZoom`**，它在 iOS 上不重排版面，缩小后页面只占半屏。
+    static func applyZoom(_ zoom: Double, to webView: WKWebView, site: Site) {
+        resetPageZoom(webView)
+        installUserScripts(
+            on: webView.configuration.userContentController,
+            proxied: ProxyManager.shared.isProxied(site.profile),
+            zoom: zoom
+        )
+        refreshZoom(zoom, in: webView)
+    }
+
+    /// 只对当前页生效，不重装脚本。didFinish 里补一刀用：从往返缓存里恢复的页面
+    /// 不会重新跑 documentStart 脚本，手上还是进缓存时的缩放值。
+    static func refreshZoom(_ zoom: Double, in webView: WKWebView) {
+        resetPageZoom(webView)
+        webView.evaluateJavaScript(ZoomScript.liveUpdate(zoom: zoom), completionHandler: nil)
+    }
+
+    /// 老版本是用 pageZoom 实现缩放的，同一个 WebView 上不该两套叠加
+    private static func resetPageZoom(_ webView: WKWebView) {
+        if abs(webView.pageZoom - 1) > 0.001 { webView.pageZoom = 1 }
     }
 }
 
